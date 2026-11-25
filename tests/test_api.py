@@ -39,6 +39,7 @@ def client(tmp_path, monkeypatch):
 def test_page_and_docs_are_open(client):
     assert client.get("/").status_code == 200 and "Weather Risk Agent" in client.get("/").text
     assert client.get("/docs").status_code == 200
+    assert client.get("/icon.png").headers["content-type"] == "image/png"
 
 
 def test_chat_requires_the_access_code(client):

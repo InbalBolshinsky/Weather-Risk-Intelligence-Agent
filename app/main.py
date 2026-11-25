@@ -95,6 +95,10 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
     def page() -> FileResponse:
         return FileResponse(WEB_PAGE)
 
+    @app.get("/icon.png", include_in_schema=False)
+    def icon() -> FileResponse:
+        return FileResponse(WEB_PAGE.parent / "icon.png", media_type="image/png")
+
     @app.post("/api/chat", dependencies=[Depends(require_access)])
     def chat(req: ChatRequest) -> dict[str, Any]:
         """Ask the agent a question. Returns the answer text plus a `debug` field (tool calls and raw results)."""
