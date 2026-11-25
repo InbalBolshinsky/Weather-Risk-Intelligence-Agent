@@ -43,16 +43,29 @@ Other ways to run it:
 | Command | What it does |
 |---|---|
 | `.venv/bin/python scripts/chat_cli.py "Why is the Dallas hub's risk high?"` | One question in the terminal (omit the question for an interactive session; `--debug` prints tool calls) |
-| `.venv/bin/python -m pytest -q` | 76 offline tests (scripted fake model, no network or quota) |
+| `.venv/bin/python -m pytest -q` | 85 offline tests (scripted fake model, no network or quota) |
 | `.venv/bin/python evals/run_evals.py` | 38-case end-to-end eval against the real model (uses LLM quota; `--only A1_midwest_winter` runs one case) |
 | `.venv/bin/python scripts/refresh_data.py` | Re-download all data for the hubs (~6 min, throttled for Open-Meteo's free tier) |
 | `.venv/bin/python scripts/verify_apis.py` | One real call to every external API |
+| `.venv/bin/python scripts/check_scores.py` | Score-change alert: compare hub scores with `data/score_baseline.json` and POST meaningful changes to `ALERT_WEBHOOK_URL` (`--no-save` keeps the baseline) |
 
 API (interactive docs at `/docs`): `POST /api/chat`, `GET /api/status`, `GET /api/rankings` (scores straight
-from the engine, no LLM).
+from the engine, no LLM), `POST /api/alerts/check` (score-change alert, access code required).
+
+### Score-change alerts (bonus)
+
+Scores change only when the data is refreshed or the scoring config changes. After either, a check compares
+every hub with the last alerted scores and sends the **meaningful** changes (a score moving 5+ points, or a
+hazard crossing the extreme mark of 80) to a webhook. The payload works with Slack (`text`), Discord
+(`content`) or any JSON receiver (`changes`). To try it:
+
+1. Put a webhook URL in `.env` as `ALERT_WEBHOOK_URL` (a free test URL from https://webhook.site works).
+2. In `config/scoring.yaml`, change `hazard_weights` (e.g. winter 0.10, hurricane 0.40).
+3. Run `.venv/bin/python scripts/check_scores.py --no-save`: six hubs change, e.g. Miami overtakes Houston as #1.
+4. Revert the weights: `git checkout config/scoring.yaml`.
 
 ## Deploy your own
 
 `render.yaml` is a Render Blueprint (free web service): create a Blueprint from this repo, then set
 `GROQ_API_KEY` and `DEMO_TOKEN` (any random string, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(12))"`)
-in the dashboard. Health check: `/api/status`.
+in the dashboard (optionally `ALERT_WEBHOOK_URL`). Health check: `/api/status`.

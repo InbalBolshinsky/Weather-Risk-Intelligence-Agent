@@ -26,6 +26,7 @@ from app.data import fema_nri
 from app.data.http import CachedHttp
 from app.llm.base import LLMProvider
 from app.llm.fallback import build_chain
+from app.scoring.alerts import check_score_changes
 from app.scoring.service import ScoringService
 from app.store.db import bump_counter, connect
 
@@ -135,6 +136,15 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
                 "config_version": scoring.cfg.version, "models": models,
                 "questions_left_today": questions_left(http, utc_today()), "daily_cap": DAILY_CAP,
                 "conversation_cap": CONVERSATION_CAP, "access_code_required": bool(os.getenv("DEMO_TOKEN"))}
+
+    @app.post("/api/alerts/check", dependencies=[Depends(require_access)])
+    def alerts_check() -> dict[str, Any]:
+        """Score-change alert (D76): compare hub scores with the last alerted baseline and POST meaningful
+        changes (>= 5 points, or a hazard crossing 80) to ALERT_WEBHOOK_URL. No LLM involved."""
+        http = db_http()
+        if not cache_ready(http):
+            raise HTTPException(503, detail={"error": "data_not_loaded", "message": "Hub data isn't loaded yet."})
+        return check_score_changes(scoring.with_http(http), os.getenv("ALERT_WEBHOOK_URL"))
 
     @app.get("/api/rankings")
     def rankings(hazard: Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"] = "overall",

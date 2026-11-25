@@ -17,3 +17,5 @@ services:
         sync: false
       - key: DEMO_TOKEN
         sync: false
+      - key: ALERT_WEBHOOK_URL      # optional (D76): where score-change alerts go
+        sync: false

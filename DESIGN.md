@@ -33,8 +33,15 @@ are logged in [PLAN.md](PLAN.md) (D1…).
   unavailable (rate limit, timeout) or makes malformed tool calls twice, never on a bad answer. On the Groq free
   tier (8K tokens/min per model) a turn uses ~5K tokens: prompt 769 + tool definitions 827, plus results.
 - **API.** `GET /` (chat page), `POST /api/chat` (needs the access code when deployed), `GET /api/status`,
-  `GET /api/rankings` (engine only, no LLM), and FastAPI's interactive `/docs`. The page shows only the answer
-  text; raw tool results go in a `debug` field.
+  `GET /api/rankings` (engine only, no LLM), `POST /api/alerts/check` (see below), and FastAPI's interactive
+  `/docs`. The page shows only the answer text; raw tool results go in a `debug` field.
+- **Score-change alerts (bonus).** Scores use a fixed data window, so they change only when the data is
+  refreshed or the scoring config changes. `app/scoring/alerts.py` recomputes the 20 hubs, compares them with
+  the last alerted values in `data/score_baseline.json`, and POSTs meaningful changes (a score moving ≥ 5
+  points, the tie rule, or a hazard crossing the extreme mark of 80) to `ALERT_WEBHOOK_URL`. Smaller moves
+  add up until they cross the threshold. Triggered by the end of `refresh_data.py`, by `scripts/check_scores.py`,
+  or by `POST /api/alerts/check` (access code). The payload carries `text` (Slack), `content` (Discord) and
+  structured `changes`. No LLM; the chat page doesn't show alerts.
 - **Deployment.** One Render free web service (`render.yaml`), native Python, one uvicorn worker (the SQLite
   cache and in-memory scores are per process). The host's disk starts empty, so the committed data snapshot
   is unpacked on first start: no upstream downloads at boot. Secrets (`GROQ_API_KEY`, `DEMO_TOKEN`) are set
@@ -47,15 +54,15 @@ config/        hubs.yaml (20 hubs, aliases, airport stations) · scoring.yaml (a
 app/
   data/        API clients with a cached, retrying HTTP layer (Open-Meteo, FEMA NRI, NOAA GHCN, NWS)
   store/       SQLite schema and helpers
-  scoring/     kpis.py · normalize.py · engine.py (scores, confidence, flags, ranking) · service.py
+  scoring/     kpis.py · normalize.py · engine.py (scores, confidence, flags, ranking) · service.py · alerts.py
   geo/         resolver.py (deterministic place resolution)
   llm/         base.py (neutral types) · openai_compat.py (adapter) · fallback.py (chain)
   agent/       tools.py · prompts.py · schemas.py (answer contract) · loop.py
   main.py      FastAPI app
 web/           index.html (single-page chat)
-data/          snapshot.db.gz (committed, pre-warmed cache) · app.db (local, git-ignored)
-scripts/       verify_apis.py · refresh_data.py · chat_cli.py · model_bakeoff.py · make_snapshot.py
-tests/         76 offline tests (fixtures, fake geocoder, scripted fake model)
+data/          snapshot.db.gz (committed, pre-warmed cache) · score_baseline.json (last alerted scores) · app.db (local, git-ignored)
+scripts/       verify_apis.py · refresh_data.py · chat_cli.py · check_scores.py · model_bakeoff.py · make_snapshot.py
+tests/         85 offline tests (fixtures, fake geocoder, scripted fake model)
 evals/         38-case end-to-end eval set + runner + report merge; reports in evals/results/
 render.yaml    deployment (Render Blueprint)
 ```
@@ -75,7 +82,9 @@ render.yaml    deployment (Render Blueprint)
 gzipped snapshot, so the demo doesn't depend on ~60 upstream calls. **Not Postgres:** no concurrency or scale
 need. **Not JSON files:** we query sessions and counters. Each request thread uses its own connection.
 Trade-off: on a free host the disk is ephemeral, so conversations and the daily counter reset on every restart
-(scores don't: the snapshot is unpacked again).
+(scores don't: the snapshot is unpacked again). For the same reason the alert baseline is a committed JSON file,
+not a table: a SQLite copy would be wiped on each deploy, exactly when config changes arrive. Workflow: change
+data or config, run the check (it alerts and updates the baseline), commit both.
 All scoring numbers live in `scoring.yaml`; every output carries a hash of it (`config_version`).
 
 ## 4. Scoring

@@ -48,6 +48,7 @@ of every decision.
 python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 cp .env.example .env                                   # add GROQ_API_KEY (and GOOGLE_API_KEY for Gemini)
 .venv/bin/python scripts/refresh_data.py               # pre-warm cache for all hubs (~6 min, throttled)
+.venv/bin/python scripts/check_scores.py               # score-change alert to ALERT_WEBHOOK_URL (D76)
 .venv/bin/python scripts/chat_cli.py "Why is the Dallas hub's risk high?"
 .venv/bin/python -m pytest -q                          # offline; loop tests use a scripted fake model
 .venv/bin/python scripts/verify_apis.py                # real calls to every external API

@@ -1,0 +1,246 @@
+{
+ "config_version": "01bacc7b",
+ "data_version": "NRI December 2025; ERA5 2016-2025",
+ "hubs": {
+  "ATL": {
+   "label": "Atlanta, GA",
+   "rank": 16,
+   "scores": {
+    "flood": 29,
+    "heat": 4,
+    "hurricane": 12,
+    "overall": 20,
+    "severe_convective": 39,
+    "winter": 12
+   }
+  },
+  "BOS": {
+   "label": "Boston, MA",
+   "rank": 3,
+   "scores": {
+    "flood": 75,
+    "heat": 8,
+    "hurricane": 60,
+    "overall": 44,
+    "severe_convective": 21,
+    "winter": 36
+   }
+  },
+  "CHI": {
+   "label": "Chicago, IL",
+   "rank": 5,
+   "scores": {
+    "flood": 52,
+    "heat": 4,
+    "hurricane": 3,
+    "overall": 34,
+    "severe_convective": 62,
+    "winter": 41
+   }
+  },
+  "CLT": {
+   "label": "Charlotte, NC",
+   "rank": 9,
+   "scores": {
+    "flood": 38,
+    "heat": 7,
+    "hurricane": 28,
+    "overall": 28,
+    "severe_convective": 36,
+    "winter": 21
+   }
+  },
+  "CMH": {
+   "label": "Columbus, OH",
+   "rank": 15,
+   "scores": {
+    "flood": 32,
+    "heat": 6,
+    "hurricane": 2,
+    "overall": 21,
+    "severe_convective": 30,
+    "winter": 29
+   }
+  },
+  "DAL": {
+   "label": "Dallas, TX",
+   "rank": 6,
+   "scores": {
+    "flood": 48,
+    "heat": 53,
+    "hurricane": 4,
+    "overall": 32,
+    "severe_convective": 65,
+    "winter": 13
+   }
+  },
+  "DEN": {
+   "label": "Denver, CO",
+   "rank": 17,
+   "scores": {
+    "flood": 6,
+    "heat": 2,
+    "hurricane": 0,
+    "overall": 18,
+    "severe_convective": 33,
+    "winter": 41
+   }
+  },
+  "DET": {
+   "label": "Detroit, MI",
+   "rank": 12,
+   "scores": {
+    "flood": 25,
+    "heat": 6,
+    "hurricane": 4,
+    "overall": 25,
+    "severe_convective": 38,
+    "winter": 44
+   }
+  },
+  "EWR": {
+   "label": "Newark, NJ",
+   "rank": 4,
+   "scores": {
+    "flood": 57,
+    "heat": 14,
+    "hurricane": 35,
+    "overall": 36,
+    "severe_convective": 36,
+    "winter": 27
+   }
+  },
+  "HOU": {
+   "label": "Houston, TX",
+   "rank": 1,
+   "scores": {
+    "flood": 89,
+    "heat": 35,
+    "hurricane": 60,
+    "overall": 47,
+    "severe_convective": 44,
+    "winter": 8
+   }
+  },
+  "IND": {
+   "label": "Indianapolis, IN",
+   "rank": 14,
+   "scores": {
+    "flood": 29,
+    "heat": 6,
+    "hurricane": 3,
+    "overall": 22,
+    "severe_convective": 44,
+    "winter": 26
+   }
+  },
+  "LAX": {
+   "label": "Los Angeles, CA",
+   "rank": 18,
+   "scores": {
+    "flood": 53,
+    "heat": 27,
+    "hurricane": 0,
+    "overall": 17,
+    "severe_convective": 13,
+    "winter": 4
+   }
+  },
+  "MEM": {
+   "label": "Memphis, TN",
+   "rank": 11,
+   "scores": {
+    "flood": 55,
+    "heat": 35,
+    "hurricane": 8,
+    "overall": 27,
+    "severe_convective": 33,
+    "winter": 15
+   }
+  },
+  "MIA": {
+   "label": "Miami, FL",
+   "rank": 2,
+   "scores": {
+    "flood": 61,
+    "heat": 8,
+    "hurricane": 100,
+    "overall": 44,
+    "severe_convective": 32,
+    "winter": 0
+   }
+  },
+  "MKC": {
+   "label": "Kansas City, MO",
+   "rank": 7,
+   "scores": {
+    "flood": 43,
+    "heat": 24,
+    "hurricane": 0,
+    "overall": 30,
+    "severe_convective": 60,
+    "winter": 27
+   }
+  },
+  "MSP": {
+   "label": "Minneapolis, MN",
+   "rank": 8,
+   "scores": {
+    "flood": 17,
+    "heat": 10,
+    "hurricane": 0,
+    "overall": 28,
+    "severe_convective": 49,
+    "winter": 55
+   }
+  },
+  "PDX": {
+   "label": "Portland, OR",
+   "rank": 20,
+   "scores": {
+    "flood": 9,
+    "heat": 12,
+    "hurricane": 0,
+    "overall": 11,
+    "severe_convective": 6,
+    "winter": 27
+   }
+  },
+  "PHX": {
+   "label": "Phoenix, AZ",
+   "rank": 10,
+   "scores": {
+    "flood": 65,
+    "heat": 97,
+    "hurricane": 4,
+    "overall": 28,
+    "severe_convective": 19,
+    "winter": 0
+   }
+  },
+  "SDF": {
+   "label": "Louisville, KY",
+   "rank": 13,
+   "scores": {
+    "flood": 38,
+    "heat": 9,
+    "hurricane": 2,
+    "overall": 24,
+    "severe_convective": 47,
+    "winter": 22
+   }
+  },
+  "SEA": {
+   "label": "Seattle, WA",
+   "rank": 19,
+   "scores": {
+    "flood": 31,
+    "heat": 5,
+    "hurricane": 0,
+    "overall": 15,
+    "severe_convective": 6,
+    "winter": 28
+   }
+  }
+ }
+}

@@ -60,6 +60,12 @@ def test_conversation_and_daily_caps(client):
     assert r.status_code == 429 and r.json()["detail"]["error"] == "daily_limit"
 
 
+def test_alert_check_requires_the_code_and_loaded_data(client):   # D76
+    assert client.post("/api/alerts/check").status_code == 401
+    r = client.post("/api/alerts/check", headers={"X-Access-Code": "s3cret"})
+    assert r.status_code == 503 and r.json()["detail"]["error"] == "data_not_loaded"   # test DB has no hub data
+
+
 def test_bad_session_id_rejected(client):
     r = client.post("/api/chat", json={"message": "a", "session_id": "../etc"}, headers={"X-Access-Code": "s3cret"})
     assert r.status_code == 400

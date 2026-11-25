@@ -10,13 +10,18 @@ run is throttled to roughly 3 hubs per minute; cached history is never re-fetche
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.config import BASELINE_END, BASELINE_START, hub_registry  # noqa: E402
+from dotenv import load_dotenv  # noqa: E402
+
+from app.config import BASELINE_END, BASELINE_START, ROOT, hub_registry  # noqa: E402
+from app.scoring.alerts import check_score_changes  # noqa: E402
+from app.scoring.service import ScoringService  # noqa: E402
 from app.data import fema_nri, ghcn, open_meteo  # noqa: E402
 from app.data.http import CachedHttp  # noqa: E402
 from app.data.series import SNOWFALL  # noqa: E402
@@ -66,7 +71,14 @@ def main() -> int:
               f"{snow_cov:>8.0%} {stn.coverage('precipitation'):>8.0%} {stn.coverage('tmax'):>8.0%}  {note}")
 
     print(f"\ndone in {time.perf_counter() - t0:.0f}s; {failures} hub(s) failed")
-    return 1 if failures else 0
+    if failures or args.hub:
+        return 1 if failures else 0
+    # D76: fresh data can change scores: alert on meaningful changes and update the baseline
+    from check_scores import report  # noqa: E402 - same folder
+    load_dotenv(ROOT / ".env")
+    print("\nscore-change check:")
+    report(check_score_changes(ScoringService(http), os.getenv("ALERT_WEBHOOK_URL")))
+    return 0
 
 
 if __name__ == "__main__":
