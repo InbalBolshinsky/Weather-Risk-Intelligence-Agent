@@ -8,6 +8,7 @@ retry if needed -> persist the turn. The user sees only answer_markdown (D41); r
 from __future__ import annotations
 
 import json
+import math
 import re
 import time
 import uuid
@@ -82,6 +83,16 @@ class TurnResult:
     unverified: bool
     ungrounded_numbers: list[str]
     debug: dict[str, Any]
+
+
+def busy_message(retry_after: float | None) -> str:
+    """D74: tell the user the real wait when the provider reported one (e.g. the daily token limit)."""
+    if retry_after is None or retry_after <= 60:
+        return ("The AI model is busy or unavailable right now (free-tier limits). "
+                "Please try again in a minute.")
+    minutes = math.ceil(retry_after / 60)
+    when = f"about {minutes} minutes" if minutes < 90 else f"about {round(minutes / 60)} hours"
+    return f"The free AI model quota is used up for now. Please try again in {when}."
 
 
 def _error_answer(text: str) -> AgentAnswer:
@@ -282,8 +293,7 @@ class Agent:
             if final is None:
                 final = _error_answer("Sorry, I couldn't finish this request within the step limit. Please narrow it down.")
         except AllProvidersFailed as e:
-            final = _error_answer("The language model service is busy or unavailable right now (free-tier limits). "
-                                  "Please try again in a minute.")
+            final = _error_answer(busy_message(e.retry_after))
             debug["events"].append(f"all providers failed: {e}")
             turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
         except Exception as e:  # noqa: BLE001 - a bug must not become an HTTP 500 mid-demo; it's logged in debug

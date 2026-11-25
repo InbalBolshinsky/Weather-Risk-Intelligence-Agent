@@ -15,7 +15,15 @@ from app.llm.openai_compat import OpenAICompatProvider
 
 
 class AllProvidersFailed(Exception):
-    pass
+    """`retry_after` (seconds) is set when every provider was rate-limited: the shortest wait any of them reported."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
+def _shortest_wait(waits: list[float | None]) -> float | None:
+    return min(waits) if waits and all(w is not None for w in waits) else None  # type: ignore[type-var]
 
 
 MAX_CAPACITY_WAIT_S = 30.0   # D40: when every provider is rate-limited, wait once (at most this long), then retry
@@ -60,14 +68,21 @@ class FallbackProvider:
         if turn is not None:
             return turn
         # D40: if every provider failed only because of rate limits, wait once for the shortest reported
-        # retry time (capped), then try the whole chain again.
-        if waits and all(w is not None for w in waits):
-            wait = min(max(min(waits), 1.0), MAX_CAPACITY_WAIT_S)  # type: ignore[type-var]
+        # retry time, then try the whole chain again. D74: if that wait is longer than the cap (e.g. the daily
+        # token limit), waiting is pointless: fail now and pass the real wait on, so the user can be told.
+        shortest = _shortest_wait(waits)
+        if shortest is not None:
+            if shortest > MAX_CAPACITY_WAIT_S:
+                self.events.append(f"all providers rate-limited for {shortest:.0f}s or more: not waiting")
+                raise AllProvidersFailed("; ".join(errors), retry_after=shortest)
+            wait = max(shortest, 1.0)
             self.events.append(f"all providers rate-limited: waited {wait:.0f}s for capacity")
             self.sleep(wait)
-            turn = self._pass(messages, tools, tool_choice, errors, [])
+            waits = []
+            turn = self._pass(messages, tools, tool_choice, errors, waits)
             if turn is not None:
                 return turn
+            raise AllProvidersFailed("; ".join(errors), retry_after=_shortest_wait(waits))
         raise AllProvidersFailed("; ".join(errors))
 
 

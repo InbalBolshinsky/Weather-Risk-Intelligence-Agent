@@ -253,6 +253,22 @@ def test_waits_once_when_every_provider_is_rate_limited():
     assert slept == [12]
 
 
+def test_long_rate_limit_fails_at_once_with_the_real_wait():   # D74: e.g. Groq's daily token limit (398 s)
+    slept: list[float] = []
+    a = Fake("a", ProviderUnavailable("rl", retry_after=398))
+    b = Fake("b", ProviderUnavailable("rl", retry_after=900))
+    with pytest.raises(AllProvidersFailed) as e:
+        FallbackProvider([a, b], sleep=slept.append).complete([], [], "required")
+    assert slept == [] and e.value.retry_after == 398
+
+
+def test_busy_message_states_the_wait():
+    from app.agent.loop import busy_message
+    assert "in a minute" in busy_message(None) and "in a minute" in busy_message(45)
+    assert "about 7 minutes" in busy_message(398)
+    assert "about 3 hours" in busy_message(3 * 3600)
+
+
 def test_no_wait_when_a_failure_is_not_a_rate_limit():
     slept: list[float] = []
     a = Fake("a", ProviderUnavailable("timeout"))
