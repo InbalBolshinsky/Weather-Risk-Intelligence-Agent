@@ -133,6 +133,10 @@ def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
                 "confidence": e.confidence, "driver": e.top_driver}
         if a.hazard == "overall":
             item["dominant_hazard"] = e.dominant_hazard
+        if e.extreme_hazards:
+            item["extreme_hazards"] = e.extreme_hazards
+        if e.preparedness_note:
+            item["preparedness_note"] = e.preparedness_note
         entries.append(item)
     out: dict[str, Any] = {
         "hazard": a.hazard, "region": a.region or "all hubs",
@@ -141,6 +145,8 @@ def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
         "ranking": entries,
         "tie_groups": r.tie_groups,
         "tie_rule": f"within {fmt_score(ctx.scoring.cfg.ranking.tie_points)} points = not meaningfully different",
+        "extreme_rule": (f"a hazard scoring >= {fmt_score(ctx.scoring.cfg.flags.extreme_hazard_score)} is extreme: "
+                         "a candidate for a targeted upgrade"),
     }
     if a.hazard == "overall":
         sens = [f"{e.key} (rank {e.rank}; {e.rank_equal_weights} with equal weights)" for e in r.entries if e.weight_sensitive]
@@ -159,6 +165,10 @@ def _profile(s: LocationScore, rank_overall: dict[str, str]) -> dict:
     out = {"wdri": fmt_score(s.wdri), "dominant_hazard": s.dominant_hazard, "confidence": s.confidence,
            "confidence_reasons": s.confidence_reasons[:3], "hazards": hazards,
            "county": s.county, "data_window": s.data_window}
+    if s.extreme_hazards:
+        out["extreme_hazards"] = s.extreme_hazards     # D37: score >= 80, targeted-upgrade candidate
+    if s.preparedness_notes:
+        out["preparedness_notes"] = s.preparedness_notes  # D34/H1: explanation only, never changes the score
     if s.hub_id:
         out["rank_overall"] = rank_overall.get(s.hub_id)
     return out
@@ -299,6 +309,13 @@ def get_methodology(ctx: ToolContext, a: MethodArgs) -> dict:
             "confidence": ("lowered when data is missing, when FEMA county data and observed weather rank a hub "
                            f">= {cfg.confidence.disagreement_rank_gap} places apart, or for known location caveats"),
             "ties": f"hubs within {fmt_score(cfg.ranking.tie_points)} points are not meaningfully different",
+            "flags": (f"extreme hazard = any hazard scoring >= {fmt_score(cfg.flags.extreme_hazard_score)} "
+                      "(targeted-upgrade candidate); winter 'rare here' note = the region is less prepared for "
+                      "winter, so each event likely disrupts more. Flags never change a score."),
+            "known_weaknesses": ["hurricane frequency counts events, not intensity: Boston's county equals "
+                                 "Houston's (storm-track intensity data not included)",
+                                 "FEMA data is county-level: large or mountainous counties can inflate flood or "
+                                 "winter frequencies (flagged as low confidence)"],
             "data": f"FEMA National Risk Index (county level) + Open-Meteo ERA5 daily weather, "
                     f"{cfg.baseline_window['start'][:4]}-{cfg.baseline_window['end'][:4]}",
             "not_covered": ["financial loss or downtime cost", "facility specifics (flood zone, elevation)",

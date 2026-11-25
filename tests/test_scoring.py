@@ -107,6 +107,24 @@ def test_cross_source_check_flags_rank_disagreement_only():
     assert all(p.hazards["winter"].confidence == "high" for p in pop)
 
 
+def test_extreme_hazard_flag_at_80_and_never_changes_score():
+    s = score_location(series(), county(HRCN=1.0), SCALES, CFG, "X", "X")      # hurricane 100
+    low = score_location(series(), county(HRCN=0.5), SCALES, CFG, "Y", "Y")    # hurricane 50
+    assert s.extreme_hazards == ["hurricane"] and low.extreme_hazards == []
+    assert s.wdri == pytest.approx(CFG.hazard_weights["hurricane"] * 100)
+
+
+def test_winter_rarity_note_for_rare_but_present_winter():
+    rare = score_location(series(snow_days=1), county(ISTM=1.0), SCALES, CFG, "DAL", "Dallas")
+    snowy = score_location(series(snow_days=40), county(ISTM=1.0), SCALES, CFG, "MSP", "Minneapolis")
+    never = score_location(series(), county(), SCALES, CFG, "MIA", "Miami")
+    assert "winter" in rare.preparedness_notes
+    assert "winter" not in snowy.preparedness_notes      # common winter: prepared
+    assert "winter" not in never.preparedness_notes      # no winter events at all: nothing to flag
+    base = score_location(series(snow_days=1), county(ISTM=1.0), SCALES, CFG, "Z", "Z")
+    assert rare.hazards["winter"].score == base.hazards["winter"].score
+
+
 def test_severe_convective_excluded_from_cross_check():
     assert CFG.hazards["severe_convective"].cross_check is False
 
@@ -171,3 +189,11 @@ class TestGoldenOnRealData:
 
     def test_miami_has_no_winter_exposure(self, svc):
         assert svc.hub_score(hub_registry().get("MIA")).hazards["winter"].score < 5
+
+    def test_extreme_hazards_on_real_data(self, svc):
+        flagged = {s.key: s.extreme_hazards for s in svc.all_hub_scores() if s.extreme_hazards}
+        assert flagged == {"MIA": ["hurricane"], "PHX": ["heat"], "HOU": ["flood"]}
+
+    def test_winter_rarity_flags_sun_belt_and_pacific_northwest(self, svc):
+        flagged = {s.key for s in svc.all_hub_scores() if "winter" in s.preparedness_notes}
+        assert flagged == {"ATL", "CLT", "DAL", "HOU", "MEM", "SEA", "PDX"}

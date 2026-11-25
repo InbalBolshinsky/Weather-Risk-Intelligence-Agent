@@ -73,6 +73,7 @@ order, and if something must slip, these go first: (1) the observed-gust KPI, (2
 - Hazards: wildfire, drought, earthquake (NRI has them; adding one = config + KPI mapping).
 - Non-US locations.
 - Non-English conversations (the agent answers in English only).
+- Hurricane intensity (storm-track data). Known weakness, documented in §4.7 (D33).
 - **A precomputed table of every US city** (see §4.6 for why, and for what "expand to all US" means instead).
 - LLM-as-judge evals at scale.
 - Scheduled alerts: stretch only (manual `POST /api/alerts/check` + webhook).
@@ -427,7 +428,8 @@ the candidates → resolve to the hub with `also_matches` set (Portland → PDX,
 - First line answers with the key number(s); then 2–4 bullets of drivers (top 1–2 hazards/KPIs per hub, with values).
 - `answer_markdown` ≤ ~150 words (tables carry the detail; also keeps qwen within 800 output tokens).
 - Always one line with the time window and data source. Assumptions go in the `assumptions` field (rendered by the UI).
-- Must mention when present: tie groups, `weight_sensitive` rankings, medium/low confidence with its reason.
+- Must mention when present: tie groups, `weight_sensitive` rankings, medium/low confidence with its reason,
+  extreme hazards (≥ 80, D37), and winter "rare here" preparedness notes (D34).
 - Long-term risk (WDRI) and current alerts are always kept separate.
 
 **Section 7 — Follow-ups (decided):**
@@ -483,7 +485,8 @@ Each KPI → 0–100 via a piecewise-linear function between anchors in `scoring
 - **Why not min-max/z-score across hubs:** with 20 hubs it's relative and unstable. Adding a hub changes
   everyone's score, which would also fire false "score changed" alerts.
 - **Cost:** anchors are judgment calls. **Mitigation now that we store all 3,232 NRI counties:** NRI KPIs map
-  **linearly from 0 to the national 95th-percentile county** (data-driven scale top, D30). Pure percentile
+  **linearly from 0 to the national 99th-percentile county** (data-driven scale top, D30; p99 not p95 per
+  D35: p95 capped 25 hub values at 100, 8 hubs identical on FEMA flood; p99 caps 4). Pure percentile
   ranking was rejected after seeing the data: hurricane frequency has 873 zero counties, so Chicago's
   0.01/yr (once a century) would have scored ~35, and ranks lose magnitude (Miami 0.30 vs Chicago 0.01 is 30×).
   A frequency of 0 always scores 0. Hand-set anchors remain only for the Open-Meteo KPIs, set from the
@@ -511,7 +514,13 @@ WDRI            = Σ_h W_h · hazard_score(h)              (Σ W_h = 1)
 **Its real weakness:** it dilutes single-hazard hubs (Miami: extreme hurricane, no winter). Mitigations:
 (a) every ranking shows the **dominant hazard** and its score, (b) per-hazard rankings are first-class, and
 resilience investments are hazard-specific anyway, (c) a **weight-sensitivity check**: each ranking is also
-computed under equal weights, and hubs whose rank moves by ≥ 3 get `weight_sensitive: true`, which the agent must mention.
+computed under equal weights, and hubs whose rank moves by ≥ 3 get `weight_sensitive: true`, which the agent must mention,
+(d) an **extreme-hazard callout (D37)**: any hazard scoring ≥ 80 is flagged in rankings and profiles as a
+targeted-upgrade candidate, so a single catastrophic hazard is never hidden by the average.
+
+**Explanation flags never change a score:** the extreme-hazard callout (D37), and the winter "rare here"
+preparedness note (D34/H1: snow ≥ 1 in on < 3 days/yr AND ice days < 5/yr, but winter events occur → the
+region is less prepared, so each event likely disrupts more).
 
 **Default hazard weights (judgment, documented, by shutdown potential):**
 
@@ -550,18 +559,26 @@ Overall = the lowest confidence among hazards contributing ≥ 20% of the WDRI.
 `confidence_reasons[]`, `assumptions[]`, `data_window`, `sources[{name, url, retrieved_at}]`,
 `config_version`, `data_version`.
 
-### 4.7 Step 3 results on real data (2026-11-25, config `05f5b6d1`)
+### 4.7 Results on real data after the scoring review (2026-11-25, config `01bacc7b`)
 
-- **Overall WDRI:** HOU 53, BOS 51, MIA 50, EWR 44, CHI 43, DAL 42 (weight-sensitive), MKC 40 … PDX 14.
-  Top tie group: HOU, BOS, MIA (within 5 points).
-- **Sanity checks (as golden tests):** Midwest winter MSP 63 > DET 49 ≈ CHI 48; hurricane MIA 100 > BOS 78 ≈
-  HOU 77; heat PHX 100 > DAL 57; Dallas dominated by severe storms 79 (hail 8.9/yr, tornado 0.93/yr), then
-  flood 75 and heat 57 (41 days/yr ≥ 95°F); Miami winter 0.
-- **Confidence flags: 8 of 100 hazard scores**, each explainable: flood at PHX, LAX, EWR, BOS, ATL (big or
-  dense counties log many flood events; the hub point sees few extreme-rain days); winter at SEA, PDX
-  (counties include mountains), DEN (FEMA #16 vs observed #2, plus the terrain caveat).
-- **Known limitation:** NRI hurricane frequency counts events, not intensity, so Boston's county (0.18/yr)
-  equals Houston's. Documented as a KPI note; a real fix needs storm-intensity data (IBTrACS/HURDAT2 stretch).
+- **Overall WDRI:** HOU 47, MIA 44, BOS 44, EWR 36, CHI 34, DAL 32, MKC 30, MSP 28, CLT 28, PHX 28
+  (weight-sensitive) … PDX 11. Tie groups: {HOU, MIA, BOS}, {EWR, CHI, DAL}.
+- **Sanity checks (as golden tests):** Midwest winter MSP 55 > DET 44 > CHI 41; hurricane MIA 100 > BOS 60 =
+  HOU 60; heat PHX 97 > DAL 53; Dallas dominated by severe storms 65, then heat 53 and flood 48, with a winter
+  "rare here" note; Miami winter 0.
+- **Extreme hazards (≥ 80):** MIA hurricane, PHX heat, HOU flood. **Winter "rare here" notes:** ATL, CLT, DAL,
+  HOU, MEM, SEA, PDX.
+- **Low-confidence flags: 7 of 100 hazard scores**, each explainable: flood at PHX, EWR, BOS, ATL (big or
+  dense counties log many flood events; the hub point sees few extreme-rain days); winter at PDX, CLT, DEN
+  (county vs hub-point disagreement; Denver also has the terrain caveat).
+- 38 tests pass (data layer, scoring logic, flags, golden checks on real data).
+- **Known weakness (accepted, not fixed — D33): hurricane intensity is not measured.** NRI hurricane
+  frequency counts events regardless of strength, so Boston's county (0.18 events/yr) scores the same as
+  Houston's, and Boston ranks #2 overall largely because of it. Hurricane scores therefore mean "how often
+  tropical-storm events reach the county", not "how damaging they are". The fix would be a storm-intensity
+  KPI from track data (e.g. Category 1+ storms within 150 km since 1980, HURDAT2/IBTrACS), about 1–2 hours of
+  work; left out for time. Stated in the README and returned by `get_methodology` as a limitation. With the
+  p99 scale, Boston and Houston both score 60 on hurricane (Miami 100).
 
 ### 4.6 Expanding beyond the 20 hubs — no table of all US cities
 
@@ -698,6 +715,12 @@ All five data APIs pass; fixtures saved in `tests/fixtures/`. LLM checks are wri
 | D18 | 2026-11-25 | Drop NRI cold wave (`CWAV`) from the winter score; it's relative to local norms (Miami 1.28/yr > Houston 0.48) | Accepted (user) |
 | D19 | 2026-11-25 | Factual hub weather questions use the hub's airport station (GHCN-Daily) as primary, with the grid model alongside; scoring stays on the grid model for consistency | Accepted (user) |
 | D20 | 2026-11-25 | Timeline flexible; no pre-emptive cuts; priority order unchanged | Accepted (user) |
+| D37 | 2026-11-25 | Scoring review 5/5 — aggregation: weighted arithmetic mean (additive, explainable, consistent with D36 weights) + **extreme-hazard callout**: any hazard score ≥ 80 is flagged in rankings and profiles as a targeted-upgrade candidate (real data: MIA hurricane, PHX heat, HOU flood). Rejected: worst hazard / 50-50 blend (override the weights: Phoenix → #2–3 on heat), weighted power mean p=2 (balanced, but loses the additive explanation; p arbitrary) | Accepted (user); implemented (config 01bacc7b) |
+| D36 | 2026-11-25 | Scoring review 4/5 — weights: keep judgment weights by shutdown potential (winter 0.25, hurricane 0.25, flood 0.20, severe storms 0.20, heat 0.10) + the weight-sensitivity flag. Rejected: equal weights (heat = hurricane contradicts the brief); FEMA national losses (would give winter 1%, flood 62%: measures what costs America money, incl. lives and crops, not hub disruption; double-counts FEMA). Next step with company data: calibrate on closure history | Accepted (user) |
+| D35a | 2026-11-25 | Heat stays in the WDRI (fits the brief's "delays shipments and costs money": work-rest rules, reefer/equipment failures, grid strain); its weight is set in review decision 4 | Accepted (user) |
+| D35 | 2026-11-25 | Scoring review 3/5 — scales: A′ = observed KPIs on fixed documented scales; FEMA KPIs linear from 0 to the **national 99th-percentile** county (was p95). Evidence: our metro-county hubs sit at the top of FEMA's distributions; p95 capped 25 hub values at 100 (8 hubs identical on FEMA flood), p99 caps 4. Rejected: min-max across hubs (relative, unstable, false alerts), percentile ranks (D30). Possible improvement: data-driven scales for observed KPIs from ~50 US metros (≈1h + ~7.8k Open-Meteo calls) | Accepted (user); implemented (config 01bacc7b) |
+| D34 | 2026-11-25 | Scoring review 2/5 — thresholds: A (fixed national thresholds: snow ≥ 1 in, ice day high ≤ 32°F, rain ≥ 2 in, gusts ≥ 47 mph, high ≥ 95°F, feels-like ≥ 105°F) + H1: a "rare here" preparedness flag in the explanation that never changes the score. Rejected: local-relative thresholds (measure surprise, not disruption; hubs not comparable), tiers (grid data too noisy at high tiers), rarity weighting (uncalibrated). Next step if the company provides closure data: a national floor plus local bar (H2). **Flag = winter only**: snow ≥ 1 in on < 3 days/yr AND ice days < 5/yr AND some winter events occur → flags ATL, CLT, DAL, HOU, MEM, SEA, PDX on real data. No heat flag (would mark 9–14 of 20 hubs: noise) | Accepted (user) |
+| D33 | 2026-11-25 | Scoring review 1/5 — KPIs: option A (FEMA NRI event frequency + observed weather at the hub, cross-checked). Rejected: NRI risk scores (include social vulnerability), Expected Annual Loss (scales with county building value), observed-only, NRI-only. Hurricane intensity left out for time; weakness documented (§4.7) | Accepted (user) |
 | D32 | 2026-11-25 | Multi-part NRI hazards summed before normalizing (flood = inland + coastal); NRI frequency 0 → score 0 | Accepted (user) |
 | D31 | 2026-11-25 | Cross-source confidence check is rank-based (≥ 10 places apart among hubs); severe storms excluded (weak gust proxy) | Accepted (user) |
 | D30 | 2026-11-25 | NRI KPIs normalized linearly to the national p95 county (refines D4's pure percentiles, which inflated tiny frequencies) | Accepted (user) |

@@ -17,8 +17,10 @@ hazard_weights:
 # Normalization to 0-100:
 #   observed -> piecewise-linear anchors [[raw, score], ...], clipped. Anchors set after seeing the 20-hub
 #               spread (2026-11-25) at roughly "worst plausible US metro" in ERA5 terms.
-#   nri      -> linear from 0 to the national 95th-percentile county value (computed from all 3,232
+#   nri      -> linear from 0 to the national 99th-percentile county value (computed from all 3,232
 #               counties), clipped at 100. Keeps magnitude (0.30 vs 0.01/yr) and a data-driven scale top.
+#               p99, not p95 (D35): our metro-county hubs sit at the top of FEMA's distributions; p95
+#               capped 25 hub values at 100 (8 hubs identical on flood), p99 caps 4.
 hazards:
   winter:
     label: Winter
@@ -68,7 +70,16 @@ hazards:
          var: apparent_tmax, op: ">=", threshold: 40.5, unit: "days/yr", weight: 0.3, anchors: [[0, 0], [60, 100]]}
       - {id: nri_heat_wave, label: "heat wave events (FEMA NRI)", source: nri, codes: [HWAV], unit: "events/yr", weight: 0.3}
 
-nri_scale_percentile: 95
+nri_scale_percentile: 99
+
+# Explanation flags: shown to the user, NEVER change a score.
+flags:
+  # D37: any hazard scoring >= this is called out as an extreme hazard (targeted-upgrade candidate).
+  extreme_hazard_score: 80
+  # D34 (H1): winter is "rare here" (region less prepared, so each event likely disrupts more) when
+  # snow >= 1 in on fewer than max_snow_days days/yr AND ice days < max_ice_days/yr, but winter events
+  # do occur (some snow days, ice days, or FEMA ice storms). Winter only: a heat flag would mark 9-14 of 20 hubs.
+  winter_rarity: {max_snow_days: 3, max_ice_days: 5}
 
 confidence:
   min_coverage: 0.95            # observed data coverage below this -> medium

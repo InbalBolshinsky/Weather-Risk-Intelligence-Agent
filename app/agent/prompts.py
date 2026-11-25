@@ -68,6 +68,8 @@ get_methodology explains them.
 are shown to the user separately.
 - One line with the time window and data source.
 - Mention tie groups, weight-sensitive rankings, and medium/low confidence with its reason when present.
+- When present, mention extreme_hazards (score >= 80: a candidate for a targeted upgrade) and preparedness \
+notes (winter is rare there, so each event likely disrupts more). These never change the score.
 - Keep long-term risk (WDRI) and current alerts separate.
 
 ## Follow-ups

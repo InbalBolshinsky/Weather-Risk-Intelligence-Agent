@@ -71,6 +71,16 @@ class RankingCfg(BaseModel):
     weight_sensitive_rank_shift: int
 
 
+class WinterRarityCfg(BaseModel):
+    max_snow_days: float
+    max_ice_days: float
+
+
+class FlagsCfg(BaseModel):
+    extreme_hazard_score: float
+    winter_rarity: WinterRarityCfg
+
+
 class DisplayCfg(BaseModel):
     score: int
     days_per_year: int
@@ -83,6 +93,7 @@ class ScoringConfig(BaseModel):
     hazard_weights: dict[str, float]
     hazards: dict[str, HazardDef]
     nri_scale_percentile: float
+    flags: FlagsCfg
     confidence: ConfidenceCfg
     ranking: RankingCfg
     display: DisplayCfg
@@ -160,6 +171,8 @@ class LocationScore:
     config_version: str
     data_version: str
     wdri_equal_weights: float = 0.0
+    extreme_hazards: list[str] = field(default_factory=list)       # D37: hazards scoring >= 80
+    preparedness_notes: dict[str, str] = field(default_factory=dict)  # D34/H1: hazard -> "rare here" note
     meta: dict = field(default_factory=dict)
 
 
@@ -276,7 +289,26 @@ def score_location(grid: DailySeries, county: NriCounty, scales: dict[str, float
                       config_version=cfg.version, data_version=f"NRI {county.nri_ver}; ERA5 {window}",
                       wdri_equal_weights=equal)
     _finalize_overall(s, cfg)
+    s.extreme_hazards = [h for h in HAZARDS if hazards[h].score >= cfg.flags.extreme_hazard_score]
+    note = winter_rarity_note(hazards["winter"], cfg)
+    if note:
+        s.preparedness_notes["winter"] = note
     return s
+
+
+def winter_rarity_note(winter: HazardResult, cfg: ScoringConfig) -> str | None:
+    """H1 (D34): flag winter as 'rare here' (less prepared region). Explanation only; never changes a score."""
+    k = {r.id: r for r in winter.kpis}
+    snow, ice, istm = k.get("snow_days_1in"), k.get("ice_days"), k.get("nri_ice_storm")
+    if not (snow and ice and snow.raw is not None and ice.raw is not None):
+        return None
+    rule = cfg.flags.winter_rarity
+    occurs = snow.raw > 0 or ice.raw > 0 or (istm is not None and (istm.raw or 0) > 0)
+    if snow.raw < rule.max_snow_days and ice.raw < rule.max_ice_days and occurs:
+        return (f"Winter events are rare here ({snow.display} with >= 1 in snow, {ice.display} staying at or "
+                f"below freezing), so the region is less prepared: each event likely disrupts more than "
+                f"this score suggests.")
+    return None
 
 
 # ----------------------------------------------------------------------------- ranking
@@ -292,6 +324,8 @@ class RankEntry:
     top_driver: str
     weight_sensitive: bool = False
     rank_equal_weights: int | None = None
+    extreme_hazards: list[str] = field(default_factory=list)
+    preparedness_note: str | None = None
 
 
 @dataclass
@@ -327,6 +361,10 @@ def rank_locations(scores: list[LocationScore], hazard: str, cfg: ScoringConfig,
         if hazard == "overall":
             e.rank_equal_weights = equal_rank[s.key]
             e.weight_sensitive = abs(i - equal_rank[s.key]) >= cfg.ranking.weight_sensitive_rank_shift
+            e.extreme_hazards = list(s.extreme_hazards)
+        else:
+            e.extreme_hazards = [hazard] if hazard in s.extreme_hazards else []
+            e.preparedness_note = s.preparedness_notes.get(hazard)
         entries.append(e)
 
     # Tie groups: consecutive entries within tie_points of the group's first (highest) member.
