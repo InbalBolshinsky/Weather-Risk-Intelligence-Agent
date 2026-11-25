@@ -2,6 +2,8 @@
 
 Shipping chain: groq-qwen3.8-27b, groq-gpt-oss-20b. For each case, the latest valid result (not a quota failure) across the runs on this chain. **Caveat:** three small fixes landed between runs (non-hub prompt line, tool error messages as grounding sources, tool-name prefix normalization); earlier passes were not re-run after them. Run 1 crashed before saving, so its answers are not available.
 
+**Code after these runs:** the model runs predate the final code changes (the plain-language prompt rule D75, re-checked on one case per model, and the review fixes and refactor D77-D78), which were verified with deterministic checks only (offline tests, byte-identical tool outputs and report rebuild, scripted agent-loop replays), not by re-running the model.
+
 **Passed: 34/38** after human review of the answers (35/38 on code checks alone).
 
 | Group | Passed |

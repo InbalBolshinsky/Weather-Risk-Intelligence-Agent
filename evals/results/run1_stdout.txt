@@ -30,17 +30,17 @@
 [PASS] E1_long_window         groq-gpt-oss-20b:openai/gpt-oss-20b  
 [FAIL] E2_non_hub             groq-gpt-oss-20b:openai/gpt-oss-20b  get_risk_profile with places ('boise',); mentions one of ('not one of our hubs', 'not a hub', "isn't one of our", 'not part of')
 Traceback (most recent call last):
-  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 133, in <module>
+  File "<repo>/evals/run_evals.py", line 133, in <module>
     sys.exit(main())
              ~~~~^^
-  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 108, in main
+  File "<repo>/evals/run_evals.py", line 108, in main
     row = run_case(agent, case, a.pause)
-  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 38, in run_case
+  File "<repo>/evals/run_evals.py", line 38, in run_case
     r = agent.chat(case.question, sid)
-  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/app/agent/loop.py", line 253, in chat
+  File "<repo>/app/agent/loop.py", line 253, in chat
     expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
                ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/app/agent/loop.py", line 253, in <lambda>
+  File "<repo>/app/agent/loop.py", line 253, in <lambda>
     expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
                                          ~~~~~~~^^^
 KeyError: 'lowered when data is missing, when FEMA county data and observed weather rank a hub >= 10 places apart, or for known location caveats'

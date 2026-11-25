@@ -114,6 +114,7 @@ def _md(rows: list[dict]) -> str:
            f"failure) across the runs on this chain. **Caveat:** three small fixes landed between runs (non-hub "
            f"prompt line, tool error messages as grounding sources, tool-name prefix normalization); earlier passes "
            f"were not re-run after them. Run 1 crashed before saving, so its answers are not available.", "",
+           "**Code after these runs:** the model runs predate the final code changes (the plain-language prompt rule D75, re-checked on one case per model, and the review fixes and refactor D77-D78), which were verified with deterministic checks only (offline tests, byte-identical tool outputs and report rebuild, scripted agent-loop replays), not by re-running the model.", "",
            f"**Passed: {passed}/{n}** after human review of the answers ({checks_only}/{n} on code checks alone).",
            "", "| Group | Passed |", "|---|---|"]
     out += [f"| {g} | {sum(r['status'] == 'PASS' for r in rs)}/{len(rs)} |" for g, rs in groups.items()]
