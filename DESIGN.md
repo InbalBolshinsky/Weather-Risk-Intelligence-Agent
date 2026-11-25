@@ -35,6 +35,10 @@ are logged in [PLAN.md](PLAN.md) (D1…).
 - **API.** `GET /` (chat page), `POST /api/chat` (needs the access code when deployed), `GET /api/status`,
   `GET /api/rankings` (engine only, no LLM), and FastAPI's interactive `/docs`. The page shows only the answer
   text; raw tool results go in a `debug` field.
+- **Deployment.** One Render free web service (`render.yaml`), native Python, one uvicorn worker (the SQLite
+  cache and in-memory scores are per process). The host's disk starts empty, so the committed data snapshot
+  is unpacked on first start: no upstream downloads at boot. Secrets (`GROQ_API_KEY`, `DEMO_TOKEN`) are set
+  only in Render's dashboard.
 
 ## 2. Repository structure
 
@@ -49,9 +53,11 @@ app/
   agent/       tools.py · prompts.py · schemas.py (answer contract) · loop.py
   main.py      FastAPI app
 web/           index.html (single-page chat)
-scripts/       verify_apis.py · refresh_data.py · chat_cli.py · model_bakeoff.py
-tests/         73 offline tests (fixtures, fake geocoder, scripted fake model)
-evals/         38-case end-to-end eval set + runner; reports in evals/results/
+data/          snapshot.db.gz (committed, pre-warmed cache) · app.db (local, git-ignored)
+scripts/       verify_apis.py · refresh_data.py · chat_cli.py · model_bakeoff.py · make_snapshot.py
+tests/         76 offline tests (fixtures, fake geocoder, scripted fake model)
+evals/         38-case end-to-end eval set + runner + report merge; reports in evals/results/
+render.yaml    deployment (Render Blueprint)
 ```
 
 ## 3. Data storage
@@ -65,10 +71,11 @@ evals/         38-case end-to-end eval set + runner; reports in evals/results/
 | `usage_counters` | Daily counters for the caps |
 | `turns` | Conversation history (full and compact forms) |
 
-**Why SQLite:** one writer, tiny data, zero operations, ships inside the container with a pre-warmed cache, so
-the demo doesn't depend on ~60 upstream calls. **Not Postgres:** no concurrency or scale need. **Not JSON
-files:** we query sessions and counters. Each request thread uses its own connection. Trade-off: on a free host
-the disk is ephemeral, so conversations reset on redeploy (scores don't: the cache is in the image).
+**Why SQLite:** one writer, tiny data, zero operations, and the pre-warmed cache ships in the repo as a 2.3 MB
+gzipped snapshot, so the demo doesn't depend on ~60 upstream calls. **Not Postgres:** no concurrency or scale
+need. **Not JSON files:** we query sessions and counters. Each request thread uses its own connection.
+Trade-off: on a free host the disk is ephemeral, so conversations and the daily counter reset on every restart
+(scores don't: the snapshot is unpacked again).
 All scoring numbers live in `scoring.yaml`; every output carries a hash of it (`config_version`).
 
 ## 4. Scoring
@@ -109,9 +116,17 @@ numbers, one geography slip ("Gulf Coast" hubs), two rule-following slips by the
 - **Free-tier LLMs:** the main model (qwen3.8-27b, 14/16 in our comparison) is a Groq preview model; the backup
   (gpt-oss-20b) scored 9/16. Back-to-back questions may wait up to ~30 s for capacity.
 - **Grounding is lexical:** it checks that a number exists in the data, not that it's attached to the right hub;
-  claims without numbers aren't checked. The eval set covers this; the code doesn't.
+  claims without numbers aren't checked. The eval set covers this; the code doesn't. Example from the evals: an
+  answer said "exceeds the 10-year limit" (the limit is 30 years); "10" passed because it appears in a tool description.
+- **Eval result 34/38:** besides the case above, one geography slip (inland hubs called "Gulf Coast") and two
+  rule-following slips by the fallback model (not naming a non-hub place; not flagging an extreme hazard).
+- **At least two model calls per data answer** (tool call, then `submit_answer`): Groq can't combine JSON-schema
+  output with tool use.
 - **Unvalidated scores:** no real closure data, so thresholds and weights are documented judgment calls. FEMA
   data is county-level; hurricane scores count events, not intensity (Boston's county equals Houston's); hubs
   sit at metro centers.
 - **Prompt-only rules:** staying in scope and ignoring instructions inside tool data rely on the model (tested by evals).
-- **Operations:** manual cache refresh; Open-Meteo's free tier is non-commercial and capped at 10K calls/day.
+- **Free hosting sleeps:** after 15 idle minutes the first request takes about a minute (the page shows a
+  wake-up message and retries); each restart clears conversations and the daily counter.
+- **Operations:** manual cache refresh; Open-Meteo's free tier is non-commercial and capped at 10K calls/day;
+  a change in FEMA's service fields makes the refresh fail loudly.

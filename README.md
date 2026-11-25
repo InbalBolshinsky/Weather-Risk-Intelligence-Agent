@@ -1,37 +1,58 @@
-# Weather-Risk-Intelligence-Agent
+# Weather Risk Intelligence Agent
 
-An AI agent that helps logistics analysts decide which US distribution hubs are most exposed to weather
-disruption. A deterministic engine computes every score; the LLM only picks tools and explains. Full design
-and decision log: [PLAN.md](PLAN.md). Setup and run commands: [CLAUDE.md](CLAUDE.md) (full README in step 8).
+A chat agent that helps logistics analysts decide which of 20 (synthetic) US distribution hubs are most exposed
+to weather disruption. A deterministic engine computes every score from public data (FEMA National Risk Index,
+Open-Meteo ERA5, NOAA stations, NWS alerts); the LLM only picks tools and explains the results.
 
-**Live demo:** https://weather-risk-agent-pzle.onrender.com (needs the access code sent with the submission;
-the first load can take about a minute while the free server wakes up).
+- **Design and architecture, repository structure, data storage, known limitations:** [DESIGN.md](DESIGN.md)
+- **Decision log (D1…):** [PLAN.md](PLAN.md)
+- **Eval results (34/38):** [evals/results/eval_combined.md](evals/results/eval_combined.md)
 
-## Known limitations
+## Live demo
 
-- **LLM availability (free tier only).** The main model (Groq `qwen3.8-27b`, 14/16 in our comparison) is a
-  Groq "preview" model that can be withdrawn; the backup (`gpt-oss-20b`, 9/16) answers fewer questions
-  correctly. Groq's free tier allows ~8,000 tokens/min per model, so back-to-back questions may wait up to
-  ~30 s. Gemini's free tier failed (rate limits, empty 400 errors) and is disabled.
-- **Grounding is lexical.** Every number in an answer must appear in a tool result, but the check can't tell
-  whether a correct number is attached to the right hub or hazard, and claims without numbers aren't checked.
-  The eval set covers this; the code doesn't. Example from the evals: an answer said "exceeds the 10-year limit"
-  for a hub (the limit is 30 years); "10" passed because it appears in the tool description.
-- **Eval result: 34/38** ([report](evals/results/eval_combined.md)). Besides the case above: one geography slip
-  (inland hubs called "Gulf Coast") and two rule-following slips by the fallback model (not naming a non-hub
-  place; not flagging an extreme hazard).
-- **The score can't be validated against real closures.** Thresholds, scales and weights are documented
-  judgment calls (no company disruption data). FEMA data is county-level (large or mountainous counties can
-  inflate flood/winter frequencies; such cases are flagged as low confidence). Hurricane scores count events,
-  not intensity (Boston's county equals Houston's). Hubs are placed at metro centers, not real facilities.
-- **Some behaviors rely on the prompt only:** staying in scope, treating text inside tool results as data,
-  and not making the investment decision. Covered by eval cases, not enforced in code.
-- **Every data answer costs at least two model calls** (tool call, then the final `submit_answer`), because
-  Groq can't combine JSON-schema output with tool use.
-- **Free hosting sleeps.** The deployed demo runs on Render's free tier: after 15 minutes without visitors the
-  server sleeps, and the first request then takes about a minute while it wakes. Each restart also clears
-  conversations and resets the daily question counter (free-tier storage isn't persistent; scores are unaffected,
-  they ship in the data snapshot). Open the URL a couple of minutes before a demo, or run it locally.
-- **Data operations are manual.** The cache is refreshed with `scripts/refresh_data.py`. Open-Meteo's free
-  tier is for non-commercial use (a company deployment needs the paid tier), and its 10,000 calls/day are
-  shared by all users. FEMA's service could change its fields (the refresh fails loudly if it does).
+**https://weather-risk-agent-pzle.onrender.com**
+
+- Asking questions needs the **access code sent with the submission**. Open
+  `https://weather-risk-agent-pzle.onrender.com/?code=<access code>` once; the page remembers it.
+- **The first load can take about a minute:** the free server sleeps after 15 minutes without visitors. The page
+  shows "Waking up the server…" and retries on its own.
+- Limits: 30 questions per conversation, 80 per day (free-tier LLM quota).
+
+Try:
+
+- Which hubs in the Midwest are most exposed to winter disruption?
+- Compare Miami and Houston in terms of hurricane and flood exposure.
+- What percentage of days in Denver last year had snowfall?
+- Why is the Dallas hub's weather disruption risk high?
+
+## Run locally
+
+Needs Python 3.14 and a free [Groq API key](https://console.groq.com/keys).
+
+```
+python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+cp .env.example .env                        # set GROQ_API_KEY (the only required value)
+.venv/bin/uvicorn app.main:app --port 8000  # then open http://localhost:8000
+```
+
+On first start the committed data snapshot (`data/snapshot.db.gz`) is unpacked into `data/app.db`, so the app
+answers right away without downloading anything. No access code is needed unless you set `DEMO_TOKEN` in `.env`.
+
+Other ways to run it:
+
+| Command | What it does |
+|---|---|
+| `.venv/bin/python scripts/chat_cli.py "Why is the Dallas hub's risk high?"` | One question in the terminal (omit the question for an interactive session; `--debug` prints tool calls) |
+| `.venv/bin/python -m pytest -q` | 76 offline tests (scripted fake model, no network or quota) |
+| `.venv/bin/python evals/run_evals.py` | 38-case end-to-end eval against the real model (uses LLM quota; `--only A1_midwest_winter` runs one case) |
+| `.venv/bin/python scripts/refresh_data.py` | Re-download all data for the hubs (~6 min, throttled for Open-Meteo's free tier) |
+| `.venv/bin/python scripts/verify_apis.py` | One real call to every external API |
+
+API (interactive docs at `/docs`): `POST /api/chat`, `GET /api/status`, `GET /api/rankings` (scores straight
+from the engine, no LLM).
+
+## Deploy your own
+
+`render.yaml` is a Render Blueprint (free web service): create a Blueprint from this repo, then set
+`GROQ_API_KEY` and `DEMO_TOKEN` (any random string, e.g. `python3 -c "import secrets; print(secrets.token_urlsafe(12))"`)
+in the dashboard. Health check: `/api/status`.
