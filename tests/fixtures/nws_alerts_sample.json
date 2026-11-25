@@ -1,0 +1,294 @@
+{
+ "houston_point_count": 0,
+ "sample": [
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.482a426810e6e4786bc362b1a275ecb91c8ada0c.001.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.482a426810e6e4786bc362b1a275ecb91c8ada0c.001.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.482a426810e6e4786bc362b1a275ecb91c8ada0c.001.1",
+    "areaDesc": "New Buffalo MI to St Joseph MI; Michigan City IN to New Buffalo MI",
+    "geocode": {
+     "SAME": [
+      "092043",
+      "092046"
+     ],
+     "UGC": [
+      "LMZ043",
+      "LMZ046"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/LMZ043",
+     "https://api.weather.gov/zones/forecast/LMZ046"
+    ],
+    "references": [],
+    "sent": "2026-11-25T04:02:00-05:00",
+    "effective": "2026-11-25T04:02:00-05:00",
+    "onset": "2026-11-26T07:00:00-05:00",
+    "expires": "2026-11-25T12:15:00-05:00",
+    "ends": "2026-11-28T04:00:00-05:00",
+    "status": "Actual",
+    "messageType": "Alert",
+    "category": "Met",
+    "severity": "Minor",
+    "certainty": "Likely",
+    "urgency": "Expected",
+    "event": "Small Craft Advisory",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Northern Indiana",
+    "headline": "Small Craft Advisory issued November 25 at 4:02AM EST until November 28 at 4:00AM EST by NWS Northern Indiana",
+    "description": "* WHAT...Northeast winds 15 to 25 knots with gusts up to 30 knots.\nA few gale force gusts to 35 knots Thursday evening. Waves 2 to\n4 feet Thursday morning building to 6 to 9 feet.\n\n* WHERE...Michigan City IN to St Joseph MI.\n\n* WHEN...From 7 AM Thursday to 4 AM EST Saturday.\n\n* IMPACTS...Conditions will be hazardous to small craft.",
+    "instruction": "Inexperienced mariners, especially those operating smaller\nvessels, should avoid navigating in hazardous conditions.",
+    "response": "Avoid",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "MWWIWX"
+     ],
+     "WMOidentifier": [
+      "WHUS73 KIWX 250902"
+     ],
+     "NWSheadline": [
+      "SMALL CRAFT ADVISORY IN EFFECT FROM 7 AM THURSDAY TO 4 AM EST SATURDAY"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "VTEC": [
+      "/O.NEW.KIWX.SC.Y.0069.261126T1200Z-261128T0900Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-28T04:00:00-05:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "NWS"
+     ],
+     "NationalWeatherService": [
+      "SCY"
+     ]
+    }
+   }
+  },
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.b5c506057d24577896c45fc489f6b240dd9581f9.001.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.b5c506057d24577896c45fc489f6b240dd9581f9.001.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.b5c506057d24577896c45fc489f6b240dd9581f9.001.1",
+    "areaDesc": "Florida Bay including Barnes Sound, Blackwater Sound, and Buttonwood Sound; Bayside and Gulfside from Craig Key to West End of Seven Mile Bridge; Gulf of America from East Cape Sable to Chokoloskee 20 to 60 NM out and beyond 5 fathoms; Gulf of America including Dry Tortugas and Rebecca Shoal Channel; Gulf of America from West End of Seven Mile Bridge to Halfmoon Shoal out to 5 Fathoms; Hawk Channel from Ocean Reef to Craig Key out to the reef; Hawk Channel from Craig Key to west end of Seven Mile Bridge out to the reef; Hawk Channel from west end of Seven Mile Bridge to Halfmoon Shoal out to the reef; Straits of Florida from Ocean Reef to Craig Key out 20 NM; Straits of Florida from Craig Key to west end of Seven Mile Bridge out 20 NM; Straits of Florida from west end of Seven Mile Bridge to south of Halfmoon Shoal out 20 NM; Straits of Florida from Halfmoon Shoal to 20 NM west of Dry Tortugas out 20 NM; Straits of Florida from Ocean Reef to Craig Key 20 to 60 NM out; Straits of Florida from Craig Key to west end of Seven Mile Bridge 20 to 60 NM out; Straits of Florida from west end of Seven Mile Bridge to south of Halfmoon Shoal 20 to 60 NM out; Straits of Florida from Halfmoon Shoal to 20 NM west of Dry Tortugas 20 to 60 NM out",
+    "geocode": {
+     "SAME": [
+      "077031",
+      "077032",
+      "077033",
+      "077034",
+      "077035",
+      "077042",
+      "077043",
+      "077044",
+      "077052",
+      "077053",
+      "077054",
+      "077055",
+      "077072",
+      "077073",
+      "077074",
+      "077075"
+     ],
+     "UGC": [
+      "GMZ031",
+      "GMZ032",
+      "GMZ033",
+      "GMZ034",
+      "GMZ035",
+      "GMZ042",
+      "GMZ043",
+      "GMZ044",
+      "GMZ052",
+      "GMZ053",
+      "GMZ054",
+      "GMZ055",
+      "GMZ072",
+      "GMZ073",
+      "GMZ074",
+      "GMZ075"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/GMZ031",
+     "https://api.weather.gov/zones/forecast/GMZ032",
+     "https://api.weather.gov/zones/forecast/GMZ033",
+     "https://api.weather.gov/zones/forecast/GMZ034",
+     "https://api.weather.gov/zones/forecast/GMZ035",
+     "https://api.weather.gov/zones/forecast/GMZ042",
+     "https://api.weather.gov/zones/forecast/GMZ043",
+     "https://api.weather.gov/zones/forecast/GMZ044",
+     "https://api.weather.gov/zones/forecast/GMZ052",
+     "https://api.weather.gov/zones/forecast/GMZ053",
+     "https://api.weather.gov/zones/forecast/GMZ054",
+     "https://api.weather.gov/zones/forecast/GMZ055",
+     "https://api.weather.gov/zones/forecast/GMZ072",
+     "https://api.weather.gov/zones/forecast/GMZ073",
+     "https://api.weather.gov/zones/forecast/GMZ074",
+     "https://api.weather.gov/zones/forecast/GMZ075"
+    ],
+    "references": [],
+    "sent": "2026-11-25T04:00:00-05:00",
+    "effective": "2026-11-25T04:00:00-05:00",
+    "onset": "2026-11-25T04:00:00-05:00",
+    "expires": "2026-11-25T11:00:00-05:00",
+    "ends": "2026-11-26T17:00:00-05:00",
+    "status": "Actual",
+    "messageType": "Alert",
+    "category": "Met",
+    "severity": "Minor",
+    "certainty": "Likely",
+    "urgency": "Expected",
+    "event": "Small Craft Advisory",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Key West FL",
+    "headline": "Small Craft Advisory issued November 25 at 4:00AM EST until November 26 at 5:00PM EST by NWS Key West FL",
+    "description": "* WHAT...Southeast to south winds 20 to 30 kt, becoming south to\nsouthwest later today and then becoming west to northwest\ntonight. In addition, seas building to 5 to 8 ft expected with\nthe highest in the Straits and the SE Gulf waters.\n\n* WHERE...Straits of Florida, Hawk Channel, Gulf waters\nincluding the Dry Tortugas, and Florida Bay.\n\n* WHEN...In Effect.\n\n* IMPACTS...A Small Craft Advisory means that wind speeds of 20\nto 33 knots, or seas of 7 feet or greater, are expected to\nproduce hazardous conditions for small craft. These hazardous\nconditions may result in poor vessel handling and steering\nresponse, broaching, overturned dinghies and kayaks, slips and\nfalls on slippery decks, rub damage along docks and seawalls,\nswamped bows at reef tract mooring balls, and dragging anchors.",
+    "instruction": "Inexperienced boaters, especially those with smaller vessels,\nshould avoid operating in these conditions.",
+    "response": "Avoid",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "MWWKEY"
+     ],
+     "WMOidentifier": [
+      "WHUS72 KKEY 250900"
+     ],
+     "NWSheadline": [
+      "SMALL CRAFT ADVISORY IN EFFECT"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "VTEC": [
+      "/O.NEW.KKEY.SC.Y.0028.261125T0900Z-261126T2200Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-26T17:00:00-05:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "NWS"
+     ],
+     "NationalWeatherService": [
+      "SCY"
+     ]
+    }
+   }
+  },
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.a84a786e15189224290bdc996a33a6cc3ae14394.001.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.a84a786e15189224290bdc996a33a6cc3ae14394.001.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.a84a786e15189224290bdc996a33a6cc3ae14394.001.1",
+    "areaDesc": "Scott; Morgan",
+    "geocode": {
+     "SAME": [
+      "017171",
+      "017137"
+     ],
+     "UGC": [
+      "ILZ049",
+      "ILZ050"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/ILZ049",
+     "https://api.weather.gov/zones/forecast/ILZ050"
+    ],
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.532fb99de36b481a3f1e40c8d49283475c3344b0.002.2",
+      "identifier": "urn:oid:2.49.0.1.840.0.532fb99de36b481a3f1e40c8d49283475c3344b0.002.2",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-24T21:50:00-06:00"
+     }
+    ],
+    "sent": "2026-11-25T02:55:00-06:00",
+    "effective": "2026-11-25T02:55:00-06:00",
+    "onset": "2026-11-25T12:00:00-06:00",
+    "expires": "2026-11-25T11:00:00-06:00",
+    "ends": "2026-11-26T18:00:00-06:00",
+    "status": "Actual",
+    "messageType": "Update",
+    "category": "Met",
+    "severity": "Severe",
+    "certainty": "Likely",
+    "urgency": "Expected",
+    "event": "Winter Storm Warning",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Lincoln IL",
+    "headline": "Winter Storm Warning issued November 25 at 2:55AM CST until November 26 at 6:00PM CST by NWS Lincoln IL",
+    "description": "* WHAT...Heavy wet snow expected. Total snow accumulations between 3\nand 6 inches, with the heaviest amounts southwest of Jacksonville.\n\n* WHERE...A portion of west central Illinois.\n\n* WHEN...From noon today to 6 PM CST Thursday.\n\n* IMPACTS...Travel could be very difficult especially late this\nafternoon and evening when moderate snows are likely. The hazardous\nconditions will impact the Wednesday evening and Thursday morning\ncommutes.",
+    "instruction": "If you must travel, keep an extra flashlight, food, and water in your\nvehicle in case of an emergency. The latest road conditions for the\nstate you are calling from can be obtained by calling 5 1 1.",
+    "response": "Prepare",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "WSWILX"
+     ],
+     "WMOidentifier": [
+      "WWUS43 KILX 250855"
+     ],
+     "NWSheadline": [
+      "WINTER STORM WARNING REMAINS IN EFFECT FROM NOON TODAY TO 6 PM CST THURSDAY"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "EAS-ORG": [
+      "WXR"
+     ],
+     "VTEC": [
+      "/O.CON.KILX.WS.W.0002.261125T1800Z-261127T0000Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-26T18:00:00-06:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "WSW"
+     ],
+     "NationalWeatherService": [
+      "WSW"
+     ]
+    }
+   }
+  }
+ ]
+}

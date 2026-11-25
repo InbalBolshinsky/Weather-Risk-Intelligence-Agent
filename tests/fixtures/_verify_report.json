@@ -1,0 +1,54 @@
+{
+ "run_at": "2026-11-25T09:05:34.348111+00:00",
+ "results": [
+  {
+   "group": "data",
+   "check": "open-meteo geocoding",
+   "ok": true,
+   "ms": 1047,
+   "finding": "ambiguity ordered by population OK; NO fuzzy matching: Huston->('US', 'Idaho'), Dalas->('IR', 'Khuzestan'); ORD->('TR', 'Ordu'); 'Space Needle'->None"
+  },
+  {
+   "group": "data",
+   "check": "open-meteo archive (ERA5)",
+   "ok": true,
+   "ms": 461,
+   "finding": "365 days, 0 nulls, grid=(39.700,-105.000) elev=1599.0m; snow>=0.1cm 40 d, >=2.5cm 9 d; X-RateLimit-Cost=15.642858 (1y x 6 vars; 10y measured at ~157)"
+  },
+  {
+   "group": "data",
+   "check": "noaa ghcn-daily (DEN station)",
+   "ok": true,
+   "ms": 842,
+   "finding": "DEN station: 364 days reported, total 75.5 cm, days>=0.1cm 26, >=2.5cm 12"
+  },
+  {
+   "group": "data",
+   "check": "fema nri (arcgis)",
+   "ok": true,
+   "ms": 2270,
+   "finding": "3232 counties, version={'December 2025'}; county lookup by point OK; null AFREQ <=> 'Not Applicable'; flood field is IFLD (no RFLD); Miami CWAV=1.28/yr (relative-to-local cold wave)"
+  },
+  {
+   "group": "data",
+   "check": "nws alerts",
+   "ok": true,
+   "ms": 1322,
+   "finding": "Houston point: 0 active; non-US point -> 400; missing User-Agent -> 403; saved 3 sample alerts"
+  },
+  {
+   "group": "xai",
+   "check": "api key present",
+   "ok": false,
+   "ms": 0,
+   "finding": "RuntimeError: XAI_API_KEY not set - skipped"
+  },
+  {
+   "group": "openai",
+   "check": "api key present",
+   "ok": false,
+   "ms": 0,
+   "finding": "RuntimeError: OPENAI_API_KEY not set - skipped"
+  }
+ ]
+}
