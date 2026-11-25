@@ -256,10 +256,22 @@ def cross_source_check(population: list["LocationScore"], cfg: ScoringConfig,
             if s.key in both and abs(rn[s.key] - ro[s.key]) >= gap_limit:
                 hr = s.hazards[h]
                 hr.confidence = "low"
-                hr.reasons.append(f"FEMA county data and observed weather rank it far apart among {len(both)} "
-                                  f"locations (#{rn[s.key]} vs #{ro[s.key]})")
+                hr.reasons.append(_disagreement_reason(hr, s.county, rn[s.key], ro[s.key], len(both)))
     for s in subjects or population:
         _finalize_overall(s, cfg)
+
+
+def _disagreement_reason(hr: HazardResult, county: str, rank_nri: int, rank_obs: int, n: int) -> str:
+    """D52: state the conflicting facts, not just ranks. Uses each source's main (highest-weight) KPI."""
+    def main(src: str) -> KpiResult | None:
+        ks = [k for k in hr.kpis if k.source == src and k.normalized is not None]
+        return max(ks, key=lambda k: k.weight) if ks else None
+
+    nri, obs = main("nri"), main("observed")
+    if not (nri and obs):
+        return f"FEMA county data and observed weather disagree (#{rank_nri} vs #{rank_obs} of {n})"
+    return (f"FEMA records {nri.label.replace(' (FEMA NRI)', '')}: {nri.display} in {county} (#{rank_nri} of {n}), "
+            f"but at the hub {obs.label}: {obs.display} (#{rank_obs} of {n})")
 
 
 def _finalize_overall(s: "LocationScore", cfg: ScoringConfig) -> None:
@@ -326,6 +338,7 @@ class RankEntry:
     rank_equal_weights: int | None = None
     extreme_hazards: list[str] = field(default_factory=list)
     preparedness_note: str | None = None
+    confidence_reason: str | None = None   # D52: why confidence isn't high (conflicting facts)
 
 
 @dataclass
@@ -362,9 +375,13 @@ def rank_locations(scores: list[LocationScore], hazard: str, cfg: ScoringConfig,
             e.rank_equal_weights = equal_rank[s.key]
             e.weight_sensitive = abs(i - equal_rank[s.key]) >= cfg.ranking.weight_sensitive_rank_shift
             e.extreme_hazards = list(s.extreme_hazards)
+            if s.confidence != "high" and s.confidence_reasons:
+                e.confidence_reason = s.confidence_reasons[0]
         else:
             e.extreme_hazards = [hazard] if hazard in s.extreme_hazards else []
             e.preparedness_note = s.preparedness_notes.get(hazard)
+            if h.confidence != "high" and h.reasons:
+                e.confidence_reason = h.reasons[0]
         entries.append(e)
 
     # Tie groups: consecutive entries within tie_points of the group's first (highest) member.

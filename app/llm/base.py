@@ -27,7 +27,12 @@ class LLMTurn:
 
 
 class ProviderUnavailable(Exception):
-    """Rate limited, overloaded, timed out, unreachable: try the next provider."""
+    """Rate limited, overloaded, timed out, unreachable: try the next provider.
+    `retry_after` (seconds) is set when the provider said how long to wait (rate limits)."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class MalformedToolCall(Exception):

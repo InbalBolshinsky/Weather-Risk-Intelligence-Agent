@@ -10,15 +10,28 @@ chain:
     model: openai/gpt-oss-120b
     model_env: GROQ_MODEL            # .env may override the model
     max_output_tokens: 2048
+    extra: {reasoning_effort: low}   # D40: fewer reasoning tokens per turn (free tier: 8K tokens/min)
   - name: groq-qwen3.8-27b
     base_url: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
     model: qwen/qwen3.8-27b
     max_output_tokens: 800           # Groq free tier: 1,000 output tokens/minute for this model
+  - name: groq-gpt-oss-20b           # candidate (D53): its own Groq quota on the same key
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    model: openai/gpt-oss-20b
+    max_output_tokens: 2048
+    enabled: false
+  - name: gemini-flash-lite          # candidate (D53): "lite" models usually get a larger free quota
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    key_env: GOOGLE_API_KEY
+    model: gemini-3.5-flash-lite
+    max_output_tokens: 4096
+    enabled: false
   - name: gemini
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     key_env: GOOGLE_API_KEY
     model: gemini-3.6-flash
     model_env: GEMINI_MODEL
     max_output_tokens: 4096
-    enabled: false                   # empty-body 400s in the comparison; re-enable after investigating
+    enabled: false                   # candidate (D38): accepts our real schema; chain order decided by the comparison

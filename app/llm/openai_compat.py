@@ -19,26 +19,27 @@ _MALFORMED = ("tool call validation failed", "tool_use_failed", "failed to call 
 
 class OpenAICompatProvider:
     def __init__(self, name: str, base_url: str, api_key: str, model: str, max_output_tokens: int,
-                 timeout_s: float = 60.0, sleep=time.sleep):
+                 timeout_s: float = 60.0, sleep=time.sleep, extra: dict | None = None):
         self.name = name
         self.model = model
         self.max_output_tokens = max_output_tokens
         self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout_s, max_retries=0)
         self.sleep = sleep
+        self.extra = extra or {}   # vendor/model-specific request fields, e.g. {"reasoning_effort": "low"}
 
     def complete(self, messages: list[Message], tools: list[dict], tool_choice: ToolChoice) -> LLMTurn:
         for attempt in (1, 2):
             try:
                 r = self.client.chat.completions.create(
                     model=self.model, messages=messages, tools=tools, tool_choice=tool_choice,  # type: ignore[arg-type]
-                    max_completion_tokens=self.max_output_tokens)
+                    max_completion_tokens=self.max_output_tokens, **self.extra)
                 break
             except openai.RateLimitError as e:
                 wait = _retry_after(e)
                 if attempt == 1 and wait is not None and wait <= MAX_INLINE_WAIT_S:
                     self.sleep(wait)
                     continue
-                raise ProviderUnavailable(f"{self.name}: rate limited") from e
+                raise ProviderUnavailable(f"{self.name}: rate limited", retry_after=wait) from e
             except (openai.APITimeoutError, openai.APIConnectionError, openai.InternalServerError) as e:
                 raise ProviderUnavailable(f"{self.name}: {type(e).__name__}") from e
             except openai.BadRequestError as e:

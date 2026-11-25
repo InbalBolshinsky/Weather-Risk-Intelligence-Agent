@@ -153,18 +153,24 @@ def _resolve(http: CachedHttp, query: str) -> Resolution:
 
     # 3) Geocoder: US-only, populated places, ambiguity by population.
     us, top = _us_places(http, name, state)
-    if not us:
-        if top is not None and top.country_code != "US" and not state:
-            return Resolution(query, "non_us", label=f"{top.name}, {top.country_code}")
-        return Resolution(query, "not_found")
+    foreign_note = None
     if top is not None and top.country_code != "US" and not state:
-        return Resolution(query, "non_us", label=f"{top.name}, {top.country_code}")
+        # D48: a sizeable same-name US city wins over a larger foreign one (Birmingham -> AL, Vancouver -> WA);
+        # otherwise the place is outside the US and out of scope (Toronto, London, Paris).
+        big_us = [c for c in us if c.name.lower() == name and (c.population or 0) >= NOTABLE_POP]
+        if not big_us:
+            return Resolution(query, "non_us", label=f"{top.name}, {top.country_code}")
+        us = big_us + [c for c in us if c not in big_us]
+        foreign_note = f"{top.name}, {top.country_code} (outside the US)"
+    if not us:
+        return Resolution(query, "not_found")
     first = us[0]
     same_name = [c for c in us if c.name.lower() == first.name.lower()]
     if (not state and len(same_name) > 1
             and (same_name[1].population or 0) >= AMBIGUOUS_RATIO * max(first.population or 1, 1)):
         return Resolution(query, "ambiguous", candidates=[_label(c) for c in same_name[:3]])
-    return Resolution(query, "geocoded", None, f"{_label(first)} (not one of our hubs)", first.lat, first.lon)
+    return Resolution(query, "geocoded", None, f"{_label(first)} (not one of our hubs)", first.lat, first.lon,
+                      also_matches=foreign_note)
 
 
 def _with_namesake(http: CachedHttp, res: Resolution, name: str, hub: Hub, state: str | None) -> Resolution:

@@ -52,7 +52,7 @@ hubs:
      aliases: [newark, ewr, "newark liberty"]}
   - {id: BOS, name: Boston, state: MA, region: northeast, lat: 42.3601, lon: -71.0589,
      station: USW00014739, station_name: "Boston Logan Intl Airport",
-     aliases: [boston, bos, logan]}
+     aliases: [boston, bos, "logan airport", "boston logan"]}   # not bare "logan": Logan, UT is a real city (50K)
   # --- West ----------------------------------------------------------------
   - {id: DEN, name: Denver, state: CO, region: west, lat: 39.7392, lon: -104.9903,
      station: USW00003017, station_name: "Denver Intl Airport",

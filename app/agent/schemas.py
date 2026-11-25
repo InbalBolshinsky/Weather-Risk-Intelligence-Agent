@@ -7,20 +7,18 @@ from pydantic import BaseModel, ConfigDict
 
 ResponseType = Literal["answer", "clarification", "out_of_scope", "error"]
 Intent = Literal["rank", "compare", "explain", "weather_stat", "current_alerts", "methodology", "other"]
-PlaceStatus = Literal["hub_exact", "hub_alias", "hub_fuzzy", "geocoded", "llm_interpreted",
-                      "ambiguous", "not_found", "non_us"]
 
 
 class LocationOut(BaseModel):
+    """D54(4): only what the code can't already see in the tool results."""
     model_config = ConfigDict(extra="forbid")
     query: str
     hub_id: str | None
-    label: str | None
-    status: PlaceStatus
 
 
 class AgentAnswer(BaseModel):
-    """Submitted by the model. Confidence level and tables are added by the server, never by the model."""
+    """Submitted by the model (D41, D43). Everything the user sees is in answer_markdown, including
+    assumptions and the closing "Confidence: <level> — <reason>" line, whose level the server checks."""
     model_config = ConfigDict(extra="forbid")
     response_type: ResponseType
     intent: Intent
@@ -28,8 +26,6 @@ class AgentAnswer(BaseModel):
     locations: list[LocationOut]
     clarifying_question: str | None
     clarification_options: list[str]
-    assumptions: list[str]
-    confidence_reason: str
     suggested_followups: list[str]
 
 

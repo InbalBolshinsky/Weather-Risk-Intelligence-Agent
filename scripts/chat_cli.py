@@ -46,10 +46,8 @@ def main() -> int:
         print(ans["answer_markdown"])
         if ans.get("clarifying_question"):
             print(f"? {ans['clarifying_question']} {ans.get('clarification_options') or ''}")
-        if ans.get("assumptions"):
-            print("assumptions:", "; ".join(ans["assumptions"]))
         d = r.debug
-        print(f"(tables: {[t['tool'] for t in r.tables]} | rounds {d['rounds']} | tokens {d['tokens']} | "
+        print(f"(tools: {[c['name'] for c in d['tool_calls']]} | rounds {d['rounds']} | tokens {d['tokens']} | "
               f"{d['latency_ms']} ms | {d['providers'][-1] if d['providers'] else '-'})")
         if a.debug:
             print(json.dumps(d, indent=1)[:3000])

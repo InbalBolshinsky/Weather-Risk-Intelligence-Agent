@@ -105,6 +105,8 @@ def test_cross_source_check_flags_rank_disagreement_only():
     cross_source_check(pop + [odd], CFG)
     assert odd.hazards["winter"].confidence == "low"
     assert all(p.hazards["winter"].confidence == "high" for p in pop)
+    reason = odd.hazards["winter"].reasons[-1]   # D52: states the conflicting facts, not just ranks
+    assert "events/yr" in reason and "days/yr" in reason and "#1 of 13" in reason
 
 
 def test_extreme_hazard_flag_at_80_and_never_changes_score():

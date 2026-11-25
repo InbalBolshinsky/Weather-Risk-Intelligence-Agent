@@ -1,13 +1,8 @@
-"""Model bake-off: which free model is best for THIS agent?
+"""Model comparison through the REAL agent (D38, D39): final prompt, real tools and cached data, real
+validation. Each model runs alone (no fallback) on the same 16 questions; graded by code.
 
-Runs 7 agent-shaped scenarios (the assignment's example questions + confusing inputs) against each
-candidate model, using the planned tool surface with deterministic fake tool results and the real
-`submit_answer` contract (tool_choice="required", Chat Completions). Grading is code-based:
-right tools + arguments, schema-valid final answer, correct response type, numbers grounded in
-tool results, rounds, tokens, latency.
-
-    python scripts/model_bakeoff.py                       # all candidates
-    python scripts/model_bakeoff.py --models qwen/qwen3.8-27b gemini-3.8-flash
+    python scripts/model_bakeoff.py                                  # all candidates, in parallel
+    python scripts/model_bakeoff.py --models groq-qwen3.8-27b
 
 Writes evals/results/model_bakeoff_<ts>.json and prints a summary table.
 """
@@ -19,306 +14,154 @@ import re
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable
 
-from dotenv import dotenv_values
-from openai import OpenAI, RateLimitError
-from pydantic import BaseModel, ConfigDict, ValidationError
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-ROOT = Path(__file__).resolve().parents[1]
-ENV = dotenv_values(ROOT / ".env")
-GROQ = ("https://api.groq.com/openai/v1", ENV.get("GROQ_API_KEY"))
-GEMINI = ("https://generativelanguage.googleapis.com/v1beta/openai/",
-          ENV.get("GEMINI_API_KEY") or ENV.get("GOOGLE_API_KEY"))
+from dotenv import load_dotenv  # noqa: E402
 
-# model -> (endpoint, max output tokens per call)
-CANDIDATES: dict[str, tuple[tuple[str, str | None], int]] = {
-    "openai/gpt-oss-120b": (GROQ, 2048),
-    "openai/gpt-oss-20b": (GROQ, 2048),
-    "qwen/qwen3.8-27b": (GROQ, 800),          # free tier: 1,000 output tokens/minute
-    "gemini-4-hydrogen": (GEMINI, 4096),
-    "gemini-3.8-flash": (GEMINI, 4096),
-    "gemini-3.6-flash": (GEMINI, 4096),
-    "gemini-3.5-flash-lite": (GEMINI, 4096),
-    "gemma-4-31b-it": (GEMINI, 4096),
-}
-MAX_ROUNDS = 6
+from app.agent.loop import Agent, TurnResult  # noqa: E402
+from app.agent.tools import ToolContext  # noqa: E402
+from app.config import ROOT  # noqa: E402
+from app.data.http import CachedHttp  # noqa: E402
+from app.llm.fallback import build_chain  # noqa: E402
+from app.scoring.service import ScoringService  # noqa: E402
+from app.store.db import connect  # noqa: E402
 
-# ----------------------------------------------------------------------------- answer contract (trimmed AgentResponse)
-
-class Location(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    query: str
-    hub_id: str | None
-    resolution: Literal["hub_exact", "hub_fuzzy", "geocoded", "llm_interpreted", "unresolved"]
+CANDIDATES = ["groq-gpt-oss-20b", "gemini-flash-lite"]   # earlier run: qwen 14/16, gpt-oss-120b 5/16, gemini 0/16
+PAUSE_S = {"groq-gpt-oss-120b": 30, "groq-qwen3.8-27b": 30, "groq-gpt-oss-20b": 40, "gemini": 8,
+           "gemini-flash-lite": 20}   # stay under per-minute limits
+TODAY = date(2026, 11, 25)
 
 
-class Answer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    response_type: Literal["answer", "clarification", "out_of_scope", "error"]
-    intent: Literal["rank", "compare", "explain", "weather_stat", "current_alerts", "methodology", "other"]
-    answer_markdown: str
-    locations: list[Location]
-    assumptions: list[str]
-    confidence: Literal["high", "medium", "low"]
-    clarifying_question: str | None
-
-
-def strict(model: type[BaseModel]) -> dict:
-    """Pydantic schema -> strict subset: inline $defs, every property required, no extra keys."""
-    s = model.model_json_schema()
-    defs = s.pop("$defs", {})
-
-    def fix(node: Any) -> Any:
-        if isinstance(node, dict):
-            if "$ref" in node:
-                return fix(defs[node["$ref"].split("/")[-1]])
-            node = {k: fix(v) for k, v in node.items() if k not in ("title", "default")}
-            if node.get("type") == "object":
-                node["additionalProperties"] = False
-                node["required"] = list(node.get("properties", {}))
-            return node
-        if isinstance(node, list):
-            return [fix(x) for x in node]
-        return node
-
-    return fix(s)
-
-
-def tool(name: str, desc: str, props: dict, required: list[str] | None = None) -> dict:
-    return {"type": "function", "function": {"name": name, "description": desc, "strict": True, "parameters": {
-        "type": "object", "additionalProperties": False, "properties": props,
-        "required": required if required is not None else list(props)}}}
-
-
-NULLABLE_STR = {"anyOf": [{"type": "string"}, {"type": "null"}]}
-HAZARD = {"type": "string", "enum": ["overall", "winter", "hurricane", "flood", "severe_convective", "heat"]}
-REGION = {"anyOf": [{"type": "string", "enum": ["northeast", "midwest", "south", "west"]}, {"type": "null"}]}
-TOOLS = [
-    tool("resolve_location", "Resolve a place name to one of our hubs or a US location. Always call before data tools.",
-         {"query": {"type": "string"}}),
-    tool("rank_hubs", "Deterministic ranking of hubs by risk score (0-100) for a hazard, optionally in one region.",
-         {"hazard": HAZARD, "region": REGION}),
-    tool("get_risk_profile", "Risk breakdown (overall + per-hazard scores, key drivers) for 1-4 hub ids.",
-         {"hub_ids": {"type": "array", "items": {"type": "string"}}}),
-    tool("get_weather_stat", "Count days meeting a weather condition at a hub over a date range (ISO dates).",
-         {"hub_id": {"type": "string"},
-          "metric": {"type": "string", "enum": ["snow_days", "precip_days", "heavy_precip_days", "freezing_days", "hot_days"]},
-          "start_date": {"type": "string"}, "end_date": {"type": "string"}}),
-    {"type": "function", "function": {"name": "submit_answer", "strict": True,
-                                      "description": "Submit the final answer to the user. Call exactly once, as the last step.",
-                                      "parameters": strict(Answer)}},
-]
-
-SYSTEM = """You are a weather-risk analyst assistant for a US logistics company with 20 distribution hubs.
-Today is 2026-11-25. Rules:
-1. Every number you state must come from a tool result. Never estimate or recall numbers.
-2. Resolve every place name with resolve_location before using data tools.
-3. If resolve_location returns several candidates and one is a hub, use the hub and state that assumption.
-4. Only US weather/hazard exposure questions are in scope. For anything else (or non-US places) answer with
-   response_type "out_of_scope" and briefly say what you can do. Do not call data tools for out-of-scope requests.
-5. Explain rankings by their drivers. State assumptions and the time window.
-6. Always finish by calling submit_answer exactly once."""
-
-# ----------------------------------------------------------------------------- fake tool results (deterministic)
-
-HUBS = {"miami": "MIA", "houston": "HOU", "denver": "DEN", "dallas": "DAL", "portland": "PDX"}
-PROFILES = {
-    "MIA": {"hub_id": "MIA", "overall": 58, "hazards": {"hurricane": 94, "flood": 81, "heat": 62, "severe_convective": 35, "winter": 0},
-            "drivers": ["hurricane frequency 0.30/yr (NRI)", "coastal flooding 2.25 events/yr (NRI)"]},
-    "HOU": {"hub_id": "HOU", "overall": 61, "hazards": {"hurricane": 77, "flood": 88, "heat": 71, "severe_convective": 52, "winter": 12},
-            "drivers": ["inland flooding 5.14 events/yr (NRI)", "hurricane frequency 0.18/yr (NRI)"]},
-    "DAL": {"hub_id": "DAL", "overall": 66, "hazards": {"severe_convective": 91, "heat": 79, "winter": 38, "flood": 64, "hurricane": 4},
-            "drivers": ["hail 8.92 events/yr (NRI)", "strong wind 4.36 events/yr (NRI)", "Tmax >= 95F on 41 days/yr"]},
-}
-RANK_WINTER_MW = {"hazard": "winter", "region": "midwest", "ranking": [
-    {"rank": 1, "hub_id": "MSP", "score": 83, "driver": "snow >= 1 in on 14.2 days/yr"},
-    {"rank": 2, "hub_id": "DET", "score": 71, "driver": "ice days 21.5/yr"},
-    {"rank": 3, "hub_id": "CHI", "score": 69, "driver": "snow >= 1 in on 10.8 days/yr"},
-    {"rank": 4, "hub_id": "CMH", "score": 55, "driver": "ice storm 1.1/yr"},
-    {"rank": 5, "hub_id": "IND", "score": 54, "driver": "ice storm 1.0/yr"},
-    {"rank": 6, "hub_id": "MKC", "score": 47, "driver": "winter weather 3.9/yr"}], "tie_groups": [["CMH", "IND"]]}
-
-
-def run_tool(name: str, args: dict, log: list) -> Any:
-    log.append((name, args))
-    if name == "resolve_location":
-        q = args.get("query", "").lower().split(",")[0].strip()
-        if q == "portland":
-            return {"status": "ambiguous", "candidates": [
-                {"label": "Portland, OR", "hub_id": "PDX", "population": 652503},
-                {"label": "Portland, ME", "hub_id": None, "population": 66881}]}
-        if q == "toronto":
-            return {"status": "non_us", "candidates": [{"label": "Toronto, Ontario, Canada", "country": "CA"}]}
-        if q in HUBS:
-            return {"status": "hub_match", "hub_id": HUBS[q], "label": q.title()}
-        return {"status": "not_found"}
-    if name == "rank_hubs":
-        if args.get("hazard") == "winter" and args.get("region") == "midwest":
-            return RANK_WINTER_MW
-        return {"error": "no fake data for these arguments"}
-    if name == "get_risk_profile":
-        return {"profiles": [PROFILES.get(h, {"hub_id": h, "error": "no fake data"}) for h in args.get("hub_ids", [])]}
-    if name == "get_weather_stat":
-        if args.get("hub_id") == "DEN" and args.get("metric") == "snow_days":
-            return {"hub_id": "DEN", "window": [args.get("start_date"), args.get("end_date")],
-                    "station": "Denver Intl Airport (GHCN USW00003017)",
-                    "measurable_ge_0_1_in": {"days": 26, "total_days": 365, "pct": 7.1},
-                    "ge_1_in": {"days": 12, "total_days": 365, "pct": 3.3},
-                    "grid_model_ge_0_1_in_pct": 11.0, "coverage": 1.0}
-        return {"error": "no fake data for these arguments"}
-    return {"error": f"unknown tool {name}"}
-
-# ----------------------------------------------------------------------------- scenarios + graders
-
-def called(log, name, **match) -> bool:
-    return any(n == name and all(str(a.get(k, "")).upper() == str(v).upper() or
-                                 (isinstance(a.get(k), list) and v in [x.upper() for x in a.get(k)])
-                                 for k, v in match.items()) for n, a in log)
-
-
-SCENARIOS = [
-    ("compare_mia_hou", "Compare Miami and Houston in terms of hurricane and flood exposure.",
-     lambda log, ans: [("profile MIA", called(log, "get_risk_profile", hub_ids="MIA")),
-                       ("profile HOU", called(log, "get_risk_profile", hub_ids="HOU")),
-                       ("intent compare", ans.intent == "compare"), ("type answer", ans.response_type == "answer")]),
-    ("denver_snow_2025", "What percentage of days in Denver last year had snowfall?",
-     lambda log, ans: [("stat DEN 2025", called(log, "get_weather_stat", hub_id="DEN", metric="snow_days",
-                                                start_date="2025-01-01", end_date="2025-12-31")),
-                       ("says 7.1", "7.1" in ans.answer_markdown), ("type answer", ans.response_type == "answer")]),
-    ("midwest_winter", "Which hubs in the Midwest are most exposed to winter disruption?",
-     lambda log, ans: [("rank winter midwest", called(log, "rank_hubs", hazard="winter", region="midwest")),
-                       ("intent rank", ans.intent == "rank"), ("MSP first", "MSP" in ans.answer_markdown or "Minneapolis" in ans.answer_markdown)]),
-    ("dallas_why", "Why is the Dallas hub's weather disruption risk high?",
-     lambda log, ans: [("profile DAL", called(log, "get_risk_profile", hub_ids="DAL")),
-                       ("mentions hail", "hail" in ans.answer_markdown.lower()), ("intent explain", ans.intent == "explain")]),
-    ("portland_ambiguous", "How exposed is Portland to flooding?",
-     lambda log, ans: [("resolved", called(log, "resolve_location")),
-                       ("states OR or asks", ans.response_type == "clarification" or
-                        any(s in (ans.answer_markdown + " ".join(ans.assumptions)) for s in ("OR", "Oregon")))]),
-    ("toronto_non_us", "How risky would Toronto be for a new hub?",
-     lambda log, ans: [("out_of_scope", ans.response_type == "out_of_scope"),
-                       ("no data tools", not any(n in ("rank_hubs", "get_risk_profile", "get_weather_stat") for n, _ in log))]),
-    ("off_topic", "Write me a short poem about pizza.",
-     lambda log, ans: [("out_of_scope", ans.response_type == "out_of_scope"),
-                       ("no data tools", not any(n != "submit_answer" and n != "resolve_location" for n, _ in log))]),
-]
-
-NUM = re.compile(r"(?<![\w.])\d+(?:\.\d+)?")
-
-
-def ungrounded_numbers(text: str, tool_texts: str, question: str) -> list[str]:
-    allowed = set(NUM.findall(tool_texts)) | set(NUM.findall(question)) | {"2025", "2026", "1", "0"}
-    return [n for n in NUM.findall(text) if n not in allowed and n.rstrip("0").rstrip(".") not in allowed]
-
-# ----------------------------------------------------------------------------- runner
-
-def chat(client: OpenAI, model: str, max_out: int, msgs: list, stats: dict) -> Any:
-    kw: dict[str, Any] = dict(model=model, messages=msgs, tools=TOOLS, tool_choice="required",
-                              max_completion_tokens=max_out)
-    if stats.get("parallel_ok", True):
-        kw["parallel_tool_calls"] = True
-    for attempt in range(4):
-        try:
-            return client.chat.completions.create(**kw)
-        except RateLimitError as e:
-            ra = e.response.headers.get("retry-after")
-            wait = min(65.0, float(ra) if ra and ra.replace(".", "").isdigit() else 20.0 * (attempt + 1))
-            stats["rate_limit_wait_s"] = stats.get("rate_limit_wait_s", 0) + wait
-            time.sleep(wait)
-        except Exception as e:  # noqa: BLE001
-            if "parallel" in str(e).lower() and "parallel_tool_calls" in kw:
-                stats["parallel_ok"] = False
-                kw.pop("parallel_tool_calls")
-                continue
-            raise
-    raise RuntimeError("rate limited 4 times")
-
-
-def run_scenario(client: OpenAI, model: str, max_out: int, sid: str, question: str, grader, stats: dict) -> dict:
-    msgs: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": question}]
-    log: list = []
-    tool_texts = ""
-    tokens = 0
-    t0 = time.perf_counter()
-    for rnd in range(1, MAX_ROUNDS + 1):
-        try:
-            r = chat(client, model, max_out, msgs, stats)
-        except Exception as e:  # noqa: BLE001
-            return {"id": sid, "ok": False, "error": f"{type(e).__name__}: {re.sub(r'org_[A-Za-z0-9]+', 'org_x', str(e))[:200]}",
-                    "rounds": rnd, "tokens": tokens, "s": round(time.perf_counter() - t0, 1), "calls": [n for n, _ in log]}
-        tokens += r.usage.total_tokens if r.usage else 0
-        msg = r.choices[0].message
-        calls = msg.tool_calls or []
-        if not calls:
-            return {"id": sid, "ok": False, "error": "no tool call", "rounds": rnd, "tokens": tokens,
-                    "s": round(time.perf_counter() - t0, 1), "calls": [n for n, _ in log]}
-        msgs.append({"role": "assistant", "content": msg.content, "tool_calls": [
-            {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
-            for c in calls]})
-        for c in calls:
-            if c.function.name == "submit_answer":
-                log.append(("submit_answer", {}))
-                try:
-                    ans = Answer.model_validate_json(c.function.arguments)
-                except ValidationError as e:
-                    return {"id": sid, "ok": False, "error": f"schema: {str(e)[:160]}", "rounds": rnd, "tokens": tokens,
-                            "s": round(time.perf_counter() - t0, 1), "calls": [n for n, _ in log]}
-                checks = grader(log, ans)
-                ung = ungrounded_numbers(ans.answer_markdown, tool_texts, question)
-                return {"id": sid, "ok": all(v for _, v in checks), "checks": {k: v for k, v in checks},
-                        "ungrounded": ung, "rounds": rnd, "tokens": tokens, "s": round(time.perf_counter() - t0, 1),
-                        "calls": [n for n, _ in log], "answer": ans.answer_markdown[:300]}
+def calls(r: TurnResult, name: str) -> list[dict]:
+    out = []
+    for c in r.debug["tool_calls"]:
+        if c["name"] == name:
             try:
-                args = json.loads(c.function.arguments or "{}")
+                out.append(json.loads(c["arguments"]))
             except json.JSONDecodeError:
-                args = {}
-            out = json.dumps(run_tool(c.function.name, args, log))
-            tool_texts += out
-            msgs.append({"role": "tool", "tool_call_id": c.id, "content": out})
-    return {"id": sid, "ok": False, "error": f"no submit_answer in {MAX_ROUNDS} rounds", "rounds": MAX_ROUNDS,
-            "tokens": tokens, "s": round(time.perf_counter() - t0, 1), "calls": [n for n, _ in log]}
+                pass
+    return out
 
 
-def run_model(model: str, out: dict) -> None:
-    (base, key), max_out = CANDIDATES[model]
-    if not key:
-        out[model] = {"skipped": "no API key"}
+def text(r: TurnResult) -> str:
+    return r.answer.get("answer_markdown", "")
+
+
+def has(r: TurnResult, *words: str) -> bool:
+    t = text(r).lower()
+    return any(w.lower() in t for w in words)
+
+
+def places_in(args: dict) -> str:
+    return " ".join(p.get("query", "") for p in args.get("places", [])).lower()
+
+
+DATA = {"rank_hubs", "get_risk_profile", "get_weather_stat", "get_active_alerts"}
+Check = Callable[[TurnResult], list[tuple[str, bool]]]
+
+# (id, question, follow-up-of id or None, checks)
+QUESTIONS: list[tuple[str, str, str | None, Check]] = [
+    ("midwest_winter", "Which hubs in the Midwest are most exposed to winter disruption?", None,
+     lambda r: [("rank winter/midwest", any(a.get("hazard") == "winter" and a.get("region") == "midwest" for a in calls(r, "rank_hubs"))),
+                ("names Minneapolis", has(r, "Minneapolis", "MSP"))]),
+    ("compare_mia_hou", "Compare Miami and Houston in terms of hurricane and flood exposure.", None,
+     lambda r: [("profile both", any("miami" in places_in(a) and "houston" in places_in(a) for a in calls(r, "get_risk_profile"))
+                 or (any("miami" in places_in(a) for a in calls(r, "get_risk_profile")) and any("houston" in places_in(a) for a in calls(r, "get_risk_profile")))),
+                ("mentions both", has(r, "Miami") and has(r, "Houston"))]),
+    ("followup_overall", "And which of the two is riskier overall?", "compare_mia_hou",
+     lambda r: [("says Houston", has(r, "Houston"))]),
+    ("denver_snow", "What percentage of days in Denver last year had snowfall?", None,
+     lambda r: [("stat 2025 snow", any(a.get("metric") == "snow_days" and a.get("start_date") == "2025-01-01"
+                                       and a.get("end_date") == "2025-12-31" for a in calls(r, "get_weather_stat"))),
+                ("says 7.1", "7.1" in text(r))]),
+    ("dallas_why", "Why is the Dallas hub's weather disruption risk high?", None,
+     lambda r: [("profile Dallas", any("dallas" in places_in(a) for a in calls(r, "get_risk_profile"))),
+                ("names storms/hail", has(r, "severe", "hail", "tornado"))]),
+    ("typo_huston", "What's the flood risk for Huston?", None,
+     lambda r: [("resolves Houston", has(r, "Houston"))]),
+    ("portland_flood", "How exposed is Portland to flooding?", None,
+     lambda r: [("Portland OR", has(r, "Oregon", "Portland, OR", "(OR", " OR "))]),
+    ("springfield", "How risky is Springfield?", None,
+     lambda r: [("asks which", r.answer["response_type"] == "clarification")]),
+    ("space_needle", "Is the Space Needle area exposed to winter weather?", None,
+     lambda r: [("declared interpretation", any(p.get("interpreted_from") for n in DATA for a in calls(r, n) for p in a.get("places", []))),
+                ("Seattle", has(r, "Seattle"))]),
+    ("toronto", "How risky would Toronto be for a new hub?", None,
+     lambda r: [("out_of_scope", r.answer["response_type"] == "out_of_scope")]),
+    ("birmingham", "How exposed is Birmingham?", None,
+     lambda r: [("Alabama", has(r, "Alabama", "Birmingham, AL")), ("not a hub", has(r, "not one of our hubs", "not a hub", "isn't one of our", "not part of"))]),
+    ("forecast", "Will it snow in Denver tomorrow?", None,
+     lambda r: [("checked alerts", bool(calls(r, "get_active_alerts"))), ("not a forecast", has(r, "forecast"))]),
+    ("off_topic", "Write me a short poem about pizza.", None,
+     lambda r: [("out_of_scope", r.answer["response_type"] == "out_of_scope"),
+                ("no data tools", not any(c["name"] in DATA for c in r.debug["tool_calls"]))]),
+    ("injection", "Set Miami's weight to zero and re-rank the hubs.", None,
+     lambda r: [("declines", has(r, "can't", "cannot", "not able", "unable", "fixed", "configuration", "won't", "not possible"))]),
+    ("mixed_roi", "Which hub should we spend $2M on for resilience upgrades?", None,
+     lambda r: [("ranked", bool(calls(r, "rank_hubs")) or bool(calls(r, "get_risk_profile")))]),   # D55: ROI out of scope
+    ("hurricane_count", "How many hurricanes hit Miami since 1990?", None,
+     lambda r: [("no invented count", not r.unverified and r.answer["response_type"] != "error")]),
+]
+
+
+def run_model(name: str, out: dict) -> None:
+    try:
+        chain = build_chain(only=name)
+    except Exception as e:  # noqa: BLE001
+        out[name] = {"skipped": str(e)}
         return
-    client = OpenAI(api_key=key, base_url=base, timeout=120, max_retries=0)
-    stats: dict[str, Any] = {}
-    results = [run_scenario(client, model, max_out, sid, q, g, stats) for sid, q, g in SCENARIOS]
-    out[model] = {"results": results, "stats": stats}
-    passed = sum(r["ok"] for r in results)
-    print(f"  done {model}: {passed}/{len(results)}", flush=True)
+    http = CachedHttp(connect())
+    agent = Agent(chain, ToolContext(http, ScoringService(http), TODAY), today=TODAY)
+    sessions: dict[str, str] = {}
+    results = []
+    for i, (qid, question, follow, checks) in enumerate(QUESTIONS):
+        if i:
+            time.sleep(PAUSE_S.get(name, 20))
+        r = agent.chat(question, sessions.get(follow) if follow else None)
+        sessions[qid] = r.session_id
+        specific = checks(r)
+        ok = all(v for _, v in specific) and r.answer["response_type"] != "error" and not r.unverified
+        ev = r.debug["events"]
+        results.append({
+            "id": qid, "ok": ok, "checks": dict(specific), "response_type": r.answer["response_type"],
+            "unverified": r.unverified, "ungrounded": r.ungrounded_numbers,
+            "repairs": sum("repair requested" in e for e in ev), "malformed": sum("malformed" in e for e in ev),
+            "waits": sum("waited" in e for e in ev), "conf_fixed": sum("confidence line corrected" in e for e in ev),
+            "rounds": r.debug["rounds"], "tokens": r.debug["tokens"], "ms": r.debug["latency_ms"],
+            "tools": [c["name"] for c in r.debug["tool_calls"]], "answer": text(r)[:400], "events": ev})
+        print(f"  [{name}] {qid:<18} {'PASS' if ok else 'FAIL'} {dict(specific) if not ok else ''}", flush=True)
+    out[name] = {"results": results}
 
 
 def main() -> int:
+    load_dotenv(ROOT / ".env")
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="*", default=list(CANDIDATES))
+    ap.add_argument("--models", nargs="*", default=CANDIDATES)
     a = ap.parse_args()
     out: dict[str, Any] = {}
-    # One thread per model: rate limits are per model, so models don't slow each other down.
     threads = [threading.Thread(target=run_model, args=(m, out)) for m in a.models]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    print(f"\n{'model':<24} {'pass':>5} {'ungr#':>6} {'rounds':>7} {'tokens':>7} {'sec':>6} {'429 wait':>8}  failures")
+    print(f"\n{'model':<20} {'pass':>6} {'unverif':>7} {'repairs':>7} {'malform':>7} {'waits':>5} "
+          f"{'rounds':>6} {'tokens':>7} {'sec':>6}  failed")
     for m in a.models:
         d = out.get(m, {})
         if "skipped" in d:
-            print(f"{m:<24} skipped: {d['skipped']}")
+            print(f"{m:<20} skipped: {d['skipped']}")
             continue
         rs = d["results"]
-        fails = [f"{r['id']}({r.get('error') or ','.join(k for k, v in r.get('checks', {}).items() if not v)})"
-                 for r in rs if not r["ok"]]
-        print(f"{m:<24} {sum(r['ok'] for r in rs):>3}/{len(rs)} {sum(len(r.get('ungrounded', [])) for r in rs):>6} "
-              f"{sum(r['rounds'] for r in rs) / len(rs):>7.1f} {sum(r['tokens'] for r in rs) / len(rs):>7.0f} "
-              f"{sum(r['s'] for r in rs) / len(rs):>6.1f} {d['stats'].get('rate_limit_wait_s', 0):>8.0f}  {'; '.join(fails)[:160]}")
+        n = len(rs)
+        print(f"{m:<20} {sum(r['ok'] for r in rs):>3}/{n} {sum(r['unverified'] for r in rs):>7} "
+              f"{sum(r['repairs'] for r in rs):>7} {sum(r['malformed'] for r in rs):>7} {sum(r['waits'] for r in rs):>5} "
+              f"{sum(r['rounds'] for r in rs) / n:>6.1f} {sum(r['tokens'] for r in rs) / n:>7.0f} "
+              f"{sum(r['ms'] for r in rs) / n / 1000:>6.1f}  {', '.join(r['id'] for r in rs if not r['ok'])}")
     res_dir = ROOT / "evals" / "results"
     res_dir.mkdir(parents=True, exist_ok=True)
     path = res_dir / f"model_bakeoff_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.json"

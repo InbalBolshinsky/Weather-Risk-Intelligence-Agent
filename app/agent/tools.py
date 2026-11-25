@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -24,10 +24,11 @@ from app.scoring.service import ScoringService
 from app.store.db import bump_counter
 
 MAX_PLACES = 4                 # D24: measured token budget (~280 tokens per profile)
-LIVE_PROFILE_DAILY_CAP = 25    # each live non-hub profile costs ~157 Open-Meteo calls (10k/day free)
-MAX_STAT_DAYS = 3653           # weather-stat window <= 10 years (bounds cost)
-DATA_LAG_DAYS = 6              # ERA5 and station data trail real time by several days
+LIVE_PROFILE_DAILY_CAP = 25    # D49 (measured): each live non-hub profile costs 156.6 Open-Meteo calls (10k/day free)
+MAX_HUB_STAT_DAYS = 10958      # D46: hubs up to 30 years from the NOAA station (no quota)
+MAX_GRID_STAT_DAYS = 3653      # D46: places without a station (grid model only) up to 10 years
 STATION_MIN_COVERAGE = 0.95
+# D45: no data-lag constant. Windows are trimmed to the last day the source actually has data.
 _LEVELS = {"high": 2, "medium": 1, "low": 0}
 
 HazardArg = Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"]
@@ -48,6 +49,7 @@ class RankArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
     hazard: HazardArg
     region: RegionArg | None
+    top_n: int | None = None
 
 
 class ProfileArgs(BaseModel):
@@ -125,46 +127,62 @@ def _unresolved_entry(r: Resolution) -> dict:
 
 # ----------------------------------------------------------------------------- tools
 
+DEFAULT_TOP_N = 5   # D54: all-hub rankings return the top 5 unless the model asks for more
+
+
+def confidence_line(level: str, reason: str | None, basis_if_high: str) -> str:
+    """D54(1): a ready line the model can copy; the validator checks it either way (D43, D52)."""
+    return f"Confidence: {level} - {reason if level != 'high' and reason else basis_if_high}"
+
+
 def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
     r = ctx.scoring.rank(a.hazard, a.region)
+    n = a.top_n or (DEFAULT_TOP_N if a.region is None else len(r.entries))
+    shown = r.entries[:n]
     entries = []
-    for e in r.entries:
-        item = {"rank": e.rank, "hub": e.key, "label": e.label, "score": fmt_score(e.score),
-                "confidence": e.confidence, "driver": e.top_driver}
+    for e in shown:
+        item: dict[str, Any] = {"rank": e.rank, "hub": e.key, "score": fmt_score(e.score),
+                                "confidence": e.confidence, "driver": e.top_driver}
         if a.hazard == "overall":
             item["dominant_hazard"] = e.dominant_hazard
         if e.extreme_hazards:
             item["extreme_hazards"] = e.extreme_hazards
         if e.preparedness_note:
             item["preparedness_note"] = e.preparedness_note
+        if e.confidence_reason:
+            item["confidence_reason"] = e.confidence_reason
+        if e.weight_sensitive:
+            item["weight_sensitive"] = f"rank {e.rank_equal_weights} with equal weights"
         entries.append(item)
-    out: dict[str, Any] = {
-        "hazard": a.hazard, "region": a.region or "all hubs",
-        "region_definition": "US Census Bureau regions" if a.region else None,
-        "scale": "0-100, higher = more exposed",
-        "ranking": entries,
-        "tie_groups": r.tie_groups,
-        "tie_rule": f"within {fmt_score(ctx.scoring.cfg.ranking.tie_points)} points = not meaningfully different",
-        "extreme_rule": (f"a hazard scoring >= {fmt_score(ctx.scoring.cfg.flags.extreme_hazard_score)} is extreme: "
-                         "a candidate for a targeted upgrade"),
-    }
-    if a.hazard == "overall":
-        sens = [f"{e.key} (rank {e.rank}; {e.rank_equal_weights} with equal weights)" for e in r.entries if e.weight_sensitive]
-        out["weight_sensitive"] = sens
-    out["confidence"] = min((e["confidence"] for e in entries[:3]), key=lambda c: _LEVELS[c], default="high")
-    return {k: v for k, v in out.items() if v is not None}
+    keys = {e.key for e in shown}
+    out: dict[str, Any] = {"hazard": a.hazard, "region": a.region or "all hubs",
+                           "shown": f"top {len(shown)} of {len(r.entries)}", "ranking": entries}
+    ties = [[k for k in g if k in keys] for g in r.tie_groups]
+    if any(len(g) > 1 for g in ties):
+        out["tie_groups"] = [g for g in ties if len(g) > 1]
+    level = min((e["confidence"] for e in entries[:3]), key=lambda c: _LEVELS[c], default="high")
+    reason = next((f"{e['hub']}: {e['confidence_reason']}" for e in entries[:3]
+                   if e["confidence"] == level and e.get("confidence_reason")), None)
+    out["confidence"] = level
+    if reason and level != "high":
+        out["confidence_reason"] = reason
+    out["confidence_line"] = confidence_line(level, reason, "FEMA county data and observed weather agree for the top hubs")
+    return out
 
 
 def _profile(s: LocationScore, rank_overall: dict[str, str]) -> dict:
     hazards = {}
     for h in HAZARDS:
         hr = s.hazards[h]
-        hazards[h] = {"score": fmt_score(hr.score), "confidence": hr.confidence}
+        hazards[h] = {"score": fmt_score(hr.score)}
+        if hr.confidence != "high":
+            hazards[h]["confidence"] = hr.confidence
+            if hr.reasons:
+                hazards[h]["confidence_reason"] = "; ".join(hr.reasons)   # D52: the conflicting facts
         if fmt_score(hr.score) > 0:  # drivers of a zero score are noise (and cost tokens)
             hazards[h]["drivers"] = [f"{k.label}: {k.display}" for k in hr.top_drivers(2)]
-    out = {"wdri": fmt_score(s.wdri), "dominant_hazard": s.dominant_hazard, "confidence": s.confidence,
-           "confidence_reasons": s.confidence_reasons[:3], "hazards": hazards,
-           "county": s.county, "data_window": s.data_window}
+    out: dict[str, Any] = {"wdri": fmt_score(s.wdri), "dominant_hazard": s.dominant_hazard,
+                           "confidence": s.confidence, "hazards": hazards}
     if s.extreme_hazards:
         out["extreme_hazards"] = s.extreme_hazards     # D37: score >= 80, targeted-upgrade candidate
     if s.preparedness_notes:
@@ -194,18 +212,34 @@ def get_risk_profile(ctx: ToolContext, a: ProfileArgs) -> dict:
             s = ctx.scoring.score_point(r.lat, r.lon, f"{r.lat:.3f},{r.lon:.3f}", r.label or r.query)  # type: ignore[arg-type]
         profiles.append({"place": r.public(), **_profile(s, rank_overall)})
         scored.append((r.hub_id or (r.label or r.query), s))
-    out: dict[str, Any] = {"profiles": profiles, "scale": "0-100, higher = more exposed",
-                           "weights": {h: w for h, w in ctx.scoring.cfg.hazard_weights.items()}}
-    if len(scored) >= 2:
+    out: dict[str, Any] = {"profiles": profiles, "data": f"{ctx.scoring.cfg.baseline_window['start'][:4]}-"
+                                                         f"{ctx.scoring.cfg.baseline_window['end'][:4]}"}
+    if len(scored) >= 2:   # computed comparison, one line per hazard, linear in the number of places (D24)
         comp = {}
         for h in ("wdri",) + HAZARDS:
             vals = [(name, fmt_score(s.wdri if h == "wdri" else s.hazards[h].score)) for name, s in scored]
             hi, lo = max(vals, key=lambda x: x[1]), min(vals, key=lambda x: x[1])
-            comp[h] = {"highest": f"{hi[0]} {hi[1]}", "lowest": f"{lo[0]} {lo[1]}", "gap": hi[1] - lo[1]}
+            comp[h] = f"highest {hi[0]} {hi[1]}, lowest {lo[0]} {lo[1]}, gap {hi[1] - lo[1]}"
         out["comparison"] = comp
-    levels = [p["confidence"] for p in profiles if "confidence" in p]
-    out["confidence"] = min(levels, key=lambda c: _LEVELS[c]) if levels else None
+    if scored:
+        weakest_name, weakest = min(scored, key=lambda x: _LEVELS[x[1].confidence])
+        level = weakest.confidence
+        reason = f"{weakest_name}: {weakest.confidence_reasons[0]}" if weakest.confidence_reasons and level != "high" else None
+        out["confidence"] = level
+        if reason:
+            out["confidence_reason"] = reason
+        out["confidence_line"] = confidence_line(level, reason, "FEMA county data and observed weather agree")
     return out
+
+
+def trim_to_data(series: DailySeries, var: str) -> tuple[DailySeries, str | None]:
+    """D45: cut trailing days that have no data yet (sources lag real time by ~7-10 days).
+    Returns (trimmed series, last date with data) — (unchanged, None) if there is no data at all."""
+    vals = series.values.get(var, [])
+    last = max((i for i, v in enumerate(vals) if v is not None), default=None)
+    if last is None:
+        return series, None
+    return series.window(series.dates[0], series.dates[last]), series.dates[last]
 
 
 def _counts(series: DailySeries, m: Metric, station: bool) -> list[dict]:
@@ -225,56 +259,75 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
         start, end = date.fromisoformat(a.start_date), date.fromisoformat(a.end_date)
     except ValueError as e:
         raise ToolError(f"dates must be YYYY-MM-DD: {e}") from e
-    notes = []
-    latest = ctx.today - timedelta(days=DATA_LAG_DAYS)
-    if end > latest:
-        end = latest
-        notes.append(f"end date moved to {end.isoformat()} (data trails real time by ~{DATA_LAG_DAYS} days)")
+    end = min(end, ctx.today)
     if start > end:
-        raise ToolError("start_date is after the latest available data or after end_date")
-    if (end - start).days + 1 > MAX_STAT_DAYS:
-        raise ToolError("window too long: max 10 years per call")
+        raise ToolError("start_date is after end_date (or in the future)")
+    days = (end - start).days + 1
+    if days > MAX_HUB_STAT_DAYS:
+        raise ToolError("window too long: max 30 years for hubs, 10 years for other places")
     s, e = start.isoformat(), end.isoformat()
+    in_baseline = BASELINE_START <= s and e <= BASELINE_END
     m = METRICS[a.metric]
     reg = hub_registry()
     results = []
     worst = "high"
+    reason: str | None = None
     for r in _resolve_places(ctx, a.places):
         if not r.usable:
             results.append(_unresolved_entry(r))
             continue
         hub = reg.get(r.hub_id) if r.hub_id else None
-        # Grid model: reuse the cached 10-year baseline when the window fits inside it (no extra API calls).
         lat, lon = (hub.lat, hub.lon) if hub else (r.lat, r.lon)
-        if BASELINE_START <= s and e <= BASELINE_END:
+        entry: dict[str, Any] = {"place": r.public()}
+        # Grid model: free from the cached 2016-2025 baseline; outside it only for non-hubs (<= 10 years), because
+        # hubs have the station (D46) and a long grid download costs ~470 Open-Meteo calls for 30 years.
+        grid_block = None
+        if in_baseline:
             grid = open_meteo.archive_daily(ctx.http, lat, lon, BASELINE_START, BASELINE_END).window(s, e)  # type: ignore[arg-type]
-        else:
+        elif hub is None and days <= MAX_GRID_STAT_DAYS:
             grid = open_meteo.archive_daily(ctx.http, lat, lon, s, e)  # type: ignore[arg-type]
-        entry: dict[str, Any] = {"place": r.public(), "window": {"start": s, "end": e, "days": len(grid.dates)}}
-        grid_block = {"source": "Open-Meteo ERA5 grid model (~10-25 km cells)", "counts": _counts(grid, m, False)}
+        else:
+            grid = None
+        if grid is not None:
+            grid, grid_last = trim_to_data(grid, m.var)
+            if grid_last:
+                grid_block = {"source": "Open-Meteo ERA5 grid model (~10-25 km cells)",
+                              "data_through": grid_last, "counts": _counts(grid, m, False)}
         primary = None
         if hub and m.station:
-            stn = ghcn.station_daily(ctx.http, hub.station, s, e)
+            stn, stn_last = trim_to_data(ghcn.station_daily(ctx.http, hub.station, s, e), m.var)
             cov = stn.coverage(m.var)
-            if cov >= STATION_MIN_COVERAGE:
+            if stn_last and cov >= STATION_MIN_COVERAGE:
                 primary = {"source": f"NOAA weather station: {hub.station_name} ({hub.station})",
-                           "data_coverage": fmt_percent(100 * cov, 0), "counts": _counts(stn, m, True)}
+                           "data_through": stn_last, "data_coverage": fmt_percent(100 * cov, 0),
+                           "counts": _counts(stn, m, True)}
             else:
                 entry["station_note"] = (f"{hub.station_name} reports this on only {fmt_percent(100 * cov, 0)} of days; "
                                          "using the grid model")
+        if hub is None and days > MAX_GRID_STAT_DAYS:
+            results.append({**entry, "note": "max 10 years for places that aren't hubs (no weather station data)"})
+            continue
         if primary:
-            entry["primary"], entry["grid_model_for_comparison"] = primary, grid_block
-        else:
+            entry["primary"] = primary
+            entry["grid_model_for_comparison"] = grid_block or "not available outside 2016-2025"
+        elif grid_block:
             entry["primary"] = grid_block
-            worst = "medium" if a.metric == "snow_days" else worst
+            if a.metric == "snow_days":
+                worst = "medium"
+                reason = ("no station snowfall measurements here, so the count comes from the grid model, which "
+                          "tends to overcount light-snow days")
+        else:
+            results.append({**entry, "note": "no data available for this window"})
+            continue
+        entry["window"] = {"start": s, "requested_end": e}
         if a.metric == "snow_days":
             entry["caveat"] = ("grid-model snow converts snow water to depth at a fixed 7:1 ratio and tends to "
                                "overcount light-snow days compared with station measurements")
         results.append(entry)
-    out: dict[str, Any] = {"metric": a.metric, "results": results}
-    if notes:
-        out["notes"] = notes
-    out["confidence"] = worst
+    out: dict[str, Any] = {"metric": a.metric, "results": results, "confidence": worst}
+    if reason:
+        out["confidence_reason"] = reason
+    out["confidence_line"] = confidence_line(worst, reason, "measured at the airport weather station")
     return out
 
 
@@ -330,12 +383,10 @@ def get_methodology(ctx: ToolContext, a: MethodArgs) -> dict:
 
 # ----------------------------------------------------------------------------- specs + dispatch
 
-PLACES_SCHEMA = {
-    "type": "array", "description": f"1-{MAX_PLACES} places, exactly as the user wrote them",
+PLACES_SCHEMA = {   # D54(5): descriptions kept short; the prompt carries the usage rules
+    "type": "array",
     "items": {"type": "object", "additionalProperties": False, "required": ["query", "interpreted_from"],
-              "properties": {"query": {"type": "string"},
-                             "interpreted_from": {"type": ["string", "null"],
-                                                  "description": "only if you interpreted a not_found place: the user's original words"}}},
+              "properties": {"query": {"type": "string"}, "interpreted_from": {"type": ["string", "null"]}}},
 }
 NULLABLE_REGION = {"type": ["string", "null"], "enum": ["northeast", "midwest", "south", "west", None]}
 HAZARD_ENUM = {"type": "string", "enum": ["overall", *HAZARDS]}
@@ -347,18 +398,16 @@ def _fn(name: str, desc: str, props: dict) -> dict:
 
 
 TOOL_SPECS = [
-    _fn("rank_hubs", "Rank our hubs by risk score (0-100) for one hazard or overall, optionally within a US Census region.",
-        {"hazard": HAZARD_ENUM, "region": NULLABLE_REGION}),
-    _fn("get_risk_profile", "Risk breakdown for 1-4 places: overall and per-hazard scores, top drivers, confidence. "
-        "With 2+ places also returns a computed comparison.", {"places": PLACES_SCHEMA}),
-    _fn("get_weather_stat", "Count days meeting a weather condition at 1-4 places over a date range (max 10 years).",
-        {"places": PLACES_SCHEMA, "metric": {"type": "string", "enum": list(METRICS)},
-         "start_date": {"type": "string", "description": "YYYY-MM-DD"},
-         "end_date": {"type": "string", "description": "YYYY-MM-DD"}}),
-    _fn("get_active_alerts", "Current NWS weather alerts for 1-4 places (live; never part of the risk score).",
+    _fn("rank_hubs", "Rank hubs by score for a hazard or overall; optional Census region; top_n (default 5 for all hubs).",
+        {"hazard": HAZARD_ENUM, "region": NULLABLE_REGION, "top_n": {"type": ["integer", "null"]}}),
+    _fn("get_risk_profile", "Scores, drivers and confidence for 1-4 places; 2+ places adds a comparison.",
         {"places": PLACES_SCHEMA}),
-    _fn("get_methodology", "How the risk score is calculated: weights, KPIs, scales, confidence rules.",
-        {"topic": HAZARD_ENUM}),
+    _fn("get_weather_stat", "Days meeting a weather condition at 1-4 places in a date range (YYYY-MM-DD). "
+        "Max 30 years for hubs, 10 otherwise.",
+        {"places": PLACES_SCHEMA, "metric": {"type": "string", "enum": list(METRICS)},
+         "start_date": {"type": "string"}, "end_date": {"type": "string"}}),
+    _fn("get_active_alerts", "Live NWS alerts for 1-4 places.", {"places": PLACES_SCHEMA}),
+    _fn("get_methodology", "How scores are calculated (weights, KPIs, scales, confidence).", {"topic": HAZARD_ENUM}),
 ]
 
 _TOOLS: dict[str, tuple[type[BaseModel], Callable[[ToolContext, Any], dict]]] = {
