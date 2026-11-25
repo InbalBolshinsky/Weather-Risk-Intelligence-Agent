@@ -60,9 +60,22 @@ def bump_counter(conn: sqlite3.Connection, day: str, key: str, limit: int) -> bo
     return True
 
 
+def restore_snapshot(path: Path) -> bool:
+    """D72: on a fresh host (no database yet), unpack the committed data snapshot so the app answers from cache."""
+    snapshot = path.parent / "snapshot.db.gz"
+    if path.exists() or not snapshot.exists():
+        return False
+    import gzip
+    import shutil
+    with gzip.open(snapshot, "rb") as g, open(path, "wb") as f:
+        shutil.copyfileobj(g, f)
+    return True
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
     path = path or db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    restore_snapshot(path)
     conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

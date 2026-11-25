@@ -1,0 +1,19 @@
+# Render Blueprint (D72): one free web service, native Python, no Docker.
+# Secrets are NOT in this file: set GROQ_API_KEY and DEMO_TOKEN in the Render dashboard (sync: false).
+services:
+  - type: web
+    name: weather-risk-agent
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # One worker: the SQLite cache and in-memory hub scores are per process. The committed data snapshot
+    # (data/snapshot.db.gz) is unpacked on first start, so no upstream downloads happen at boot.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /api/status
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.14.2"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: DEMO_TOKEN
+        sync: false
