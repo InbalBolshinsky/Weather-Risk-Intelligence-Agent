@@ -26,23 +26,23 @@ cp .env.example .env                          # then set GROQ_API_KEY in .env
 
 On first start the committed snapshot is unpacked into `data/app.db`; no downloads are needed.
 
-| Variable | Required | Purpose |
-|---|---|---|
-| `GROQ_API_KEY` | yes | The LLM (both models in the chain) |
-| `DEMO_TOKEN` | no | Access code; if unset, no code is asked |
-| `ALERT_WEBHOOK_URL` | no | Where score-change alerts are POSTed |
-| `DAILY_CAP`, `CONVERSATION_CAP` | no | Question limits (default 80 per day, 30 per conversation) |
-| `WRA_DB_PATH` | no | SQLite path (default `data/app.db`) |
-| `GOOGLE_API_KEY`, `GROQ_MODEL`, `GEMINI_MODEL` | no | Used only by `scripts/verify_apis.py` |
+| Variable                                             | Required | Purpose                                                   |
+| ---------------------------------------------------- | -------- | --------------------------------------------------------- |
+| `GROQ_API_KEY`                                     | yes      | The LLM (both models in the chain)                        |
+| `DEMO_TOKEN`                                       | no       | Access code; if unset, no code is asked                   |
+| `ALERT_WEBHOOK_URL`                                | no       | Where score-change alerts are POSTed                      |
+| `DAILY_CAP`, `CONVERSATION_CAP`                  | no       | Question limits (default 80 per day, 30 per conversation) |
+| `WRA_DB_PATH`                                      | no       | SQLite path (default `data/app.db`)                     |
+| `GOOGLE_API_KEY`, `GROQ_MODEL`, `GEMINI_MODEL` | no       | Used only by `scripts/verify_apis.py`                   |
 
-| Command (`.venv/bin/python …`) | What it does |
-|---|---|
+| Command (`.venv/bin/python …`)                            | What it does                                                                     |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------- |
 | `scripts/chat_cli.py "Why is the Dallas hub's risk high?"` | One question in the terminal (no question: interactive; `--debug`: tool calls) |
-| `-m pytest -q` | 92 offline tests (no network, no LLM) |
-| `evals/run_evals.py [--only A1_midwest_winter]` | End-to-end evals against the real model (uses LLM quota) |
-| `scripts/refresh_data.py` | Re-download hub data (~6 min), then run the score-change check |
-| `scripts/check_scores.py [--no-save]` | Score-change check against `data/score_baseline.json` |
-| `scripts/verify_apis.py` | One real call to every external API |
+| `-m pytest -q`                                             | offline tests (no network, no LLM)                                               |
+| `evals/run_evals.py [--only A1_midwest_winter]`            | End-to-end evals against the real model (uses LLM quota)                         |
+| `scripts/refresh_data.py`                                  | Re-download hub data (~6 min), then run the score-change check                   |
+| `scripts/check_scores.py [--no-save]`                      | Score-change check against `data/score_baseline.json`                          |
+| `scripts/verify_apis.py`                                   | One real call to every external API                                              |
 
 API (docs at `/docs`): `POST /api/chat`, `GET /api/status`, `GET /api/rankings` (no LLM), `POST /api/alerts/check`.
 The chat and alerts endpoints need the access code when `DEMO_TOKEN` is set.
