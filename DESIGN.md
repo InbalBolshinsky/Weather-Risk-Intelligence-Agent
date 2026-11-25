@@ -1,141 +1,170 @@
 # Design — Weather Risk Intelligence Agent
 
-An agent that helps logistics analysts decide which of 20 (synthetic) US distribution hubs are most exposed
-to weather disruption. **A deterministic engine computes every score; the LLM only chooses tools and explains
-the results, and every number it states is checked against the tool results.** Decisions and their reasons
-are logged in [PLAN.md](PLAN.md) (D1…).
+A chat agent that helps logistics analysts see which of 20 (synthetic) US hubs are most exposed to weather
+disruption. **Code computes every score, resolves every place and sets confidence; the LLM only picks tools and
+explains, and every number it writes is checked against the tool results.** Run instructions: [README](README.md).
+Full decision log (D1–D78): [PLAN.md](PLAN.md).
 
 ## 1. System architecture
 
 ```
- Browser: web/index.html ──POST /api/chat──▶ FastAPI (app/main.py)
-                                               │  access code, caps (30/conversation, ~80/day)
-                                               ▼
- Agent loop (app/agent/loop.py)
-   1. send system prompt + history + question to the LLM (tool_choice = "required")
-   2. run the tools the model calls ──▶ Tools (app/agent/tools.py)
-   3. the model ends with submit_answer          ├─ Resolver (app/geo): hub names/aliases → fuzzy → geocoder, US only
-   4. validate: schema, grounding,                ├─ Scoring engine (app/scoring): KPIs → 0–100 → hazards → WDRI
-      confidence line → one repair if needed      └─ Data clients (app/data): FEMA NRI, Open-Meteo, NOAA, NWS
-   5. save the turn, return the answer text                       │
-        │                                                         ▼
-        └─ LLM layer (app/llm): one OpenAI-compatible adapter   SQLite (data/app.db)
-           + fallback chain: Groq qwen3.8-27b → gpt-oss-20b
+Browser (web/index.html) ──POST /api/chat──▶ FastAPI (app/main.py): access code, caps
+                                                │
+                                                ▼
+                  Agent loop (app/agent/loop.py) ◀──▶ LLM layer (app/llm): OpenAI-compatible adapter,
+                     │  tool calls / results            fallback chain Groq qwen3.8-27b → gpt-oss-20b
+                     ▼
+                  Tools (app/agent/tools.py) ──▶ Resolver (app/geo) · Scoring engine (app/scoring)
+                                                  · Data clients (app/data): FEMA NRI, Open-Meteo, NOAA, NWS
+                                                        │
+                                                        ▼
+                                          SQLite data/app.db (unpacked from data/snapshot.db.gz)
 ```
 
-- **Separation of concerns.** The scoring engine knows nothing about the LLM: it is a set of pure functions,
-  tested on its own, and also reachable without the LLM via `GET /api/rankings`.
-- **Tools** take place names exactly as the user typed them; one shared resolver turns them into hubs or US
-  locations in code (typos, airport codes, ambiguous and non-US names), so the model can't skip or guess it.
-- **Own agent loop, no framework.** The trust mechanisms (grounding, repair, fallback rules) are custom either
-  way, and the whole control flow fits in one readable file.
-- **LLM layer.** One adapter for any OpenAI-compatible API. Fallback to the next model only when one is
-  unavailable (rate limit, timeout) or makes malformed tool calls twice, never on a bad answer. On the Groq free
-  tier (8K tokens/min per model) a turn uses ~5K tokens: prompt 769 + tool definitions 827, plus results.
-- **API.** `GET /` (chat page), `POST /api/chat` (needs the access code when deployed), `GET /api/status`,
-  `GET /api/rankings` (engine only, no LLM), `POST /api/alerts/check` (see below), and FastAPI's interactive
-  `/docs`. The page shows only the answer text; raw tool results go in a `debug` field.
-- **Score-change alerts (bonus).** Scores use a fixed data window, so they change only when the data is
-  refreshed or the scoring config changes. `app/scoring/alerts.py` recomputes the 20 hubs, compares them with
-  the last alerted values in `data/score_baseline.json`, and POSTs meaningful changes (a score moving ≥ 5
-  points, the tie rule, or a hazard crossing the extreme mark of 80) to `ALERT_WEBHOOK_URL`. Smaller moves
-  add up until they cross the threshold. Triggered by the end of `refresh_data.py`, by `scripts/check_scores.py`,
-  or by `POST /api/alerts/check` (access code). The payload carries `text` (Slack), `content` (Discord) and
-  structured `changes`. No LLM; the chat page doesn't show alerts.
-- **Deployment.** One Render free web service (`render.yaml`), native Python, one uvicorn worker (the SQLite
-  cache and in-memory scores are per process). The host's disk starts empty, so the committed data snapshot
-  is unpacked on first start: no upstream downloads at boot. Secrets (`GROQ_API_KEY`, `DEMO_TOKEN`) are set
-  only in Render's dashboard.
+Data flows:
+1. **Question:** page → `POST /api/chat` → loop sends prompt + history to the LLM (`tool_choice="required"`) →
+   runs the tools it calls → the LLM ends with `submit_answer` → code validates (§6) → turn saved → answer text
+   returned (raw tool results only in a `debug` field).
+2. **Without the LLM:** `GET /api/rankings` reads the scoring engine directly; `GET /api/status` reports health,
+   versions, models and questions left; `/docs` is FastAPI's API page.
+3. **Data:** clients fetch through a cached HTTP layer; history is cached permanently. `scripts/refresh_data.py`
+   re-downloads hub data; `scripts/make_snapshot.py` packs the cache into the committed snapshot.
+4. **Score-change alerts (bonus):** after a data refresh, `scripts/check_scores.py` or `POST /api/alerts/check`,
+   code compares hub scores with `data/score_baseline.json` and POSTs meaningful changes to `ALERT_WEBHOOK_URL`.
+5. **Deploy:** one Render free web service (`render.yaml`), one uvicorn worker; the snapshot is unpacked on first
+   start, so no upstream downloads at boot. Secrets are set only in Render.
 
 ## 2. Repository structure
 
 ```
-config/        hubs.yaml (20 hubs, aliases, airport stations) · scoring.yaml (all scoring numbers) · llm.yaml (model chain)
 app/
-  data/        API clients with a cached, retrying HTTP layer (Open-Meteo, FEMA NRI, NOAA GHCN, NWS)
-  store/       SQLite schema and helpers
-  scoring/     kpis.py · normalize.py · engine.py (scores, confidence, flags, ranking) · service.py · alerts.py
-  geo/         resolver.py (deterministic place resolution)
-  llm/         base.py (neutral types) · openai_compat.py (adapter) · fallback.py (chain)
-  agent/       tools.py · prompts.py · schemas.py (answer contract) · loop.py
-  main.py      FastAPI app
-web/           index.html (single-page chat)
-data/          snapshot.db.gz (committed, pre-warmed cache) · score_baseline.json (last alerted scores) · app.db (local, git-ignored)
-scripts/       verify_apis.py · refresh_data.py · chat_cli.py · check_scores.py · model_bakeoff.py · make_snapshot.py
-tests/         85 offline tests (fixtures, fake geocoder, scripted fake model)
-evals/         38-case end-to-end eval set + runner + report merge; reports in evals/results/
-render.yaml    deployment (Render Blueprint)
+  main.py        FastAPI: page, chat, status, rankings, alerts check; access code, caps
+  agent/         loop.py (rounds, validation, repair) · tools.py (5 data tools) · prompts.py · schemas.py (answer contract)
+  llm/           base.py (neutral types, errors) · openai_compat.py (adapter) · fallback.py (chain, rate-limit waits)
+  scoring/       kpis.py · normalize.py · engine.py (scores, confidence, flags, ranking) · service.py (memoized hub
+                 scores) · alerts.py (score-change check)
+  geo/           resolver.py (hub names, aliases, fuzzy, geocoder; US only) · states.py
+  data/          http.py (cached, retrying HTTP) · open_meteo.py · fema_nri.py · ghcn.py · nws.py · series.py
+  store/db.py    SQLite schema, counters, snapshot restore
+  config.py      paths, hub registry
+config/          hubs.yaml (20 hubs, aliases, airport stations) · scoring.yaml (every scoring number) · llm.yaml (chain)
+web/             index.html (single-page chat) · icon.png
+data/            snapshot.db.gz (committed cache, 2.3 MB) · score_baseline.json (last alerted scores) · app.db (git-ignored)
+scripts/         chat_cli.py · refresh_data.py · check_scores.py · verify_apis.py · model_bakeoff.py · make_snapshot.py
+tests/           92 offline tests in 6 files; fixtures/ (saved API responses); scripted fake model, no network
+evals/           cases.py (38 cases + checks) · run_evals.py · merge_reports.py · results/ (reports per run + combined)
+render.yaml      Render Blueprint · requirements.txt / requirements-dev.txt · .env.example
 ```
 
 ## 3. Data storage
 
-**SQLite (one file) + YAML config in git.**
+| What | Where | Why |
+|---|---|---|
+| Upstream responses (`http_cache`), FEMA county table (`nri_counties`) | SQLite `data/app.db` | Fast, offline, no runtime dependency on FEMA or Open-Meteo |
+| Conversations (`turns`), daily counters (`usage_counters`) | same SQLite file | Queried per session and per day |
+| Pre-warmed cache | `data/snapshot.db.gz`, committed | A fresh host or clone answers at once, without ~60 upstream calls |
+| Last alerted scores | `data/score_baseline.json`, committed | Must survive restarts; the free host wipes its disk |
+| Hubs, scoring numbers, model chain | YAML in `config/` | Reviewed in git; outputs carry the scoring hash (`config_version`) |
+| Secrets | `.env` (git-ignored) or Render's dashboard | Never in the repo |
 
-| Table | Contents |
+**Why SQLite:** one writer, tiny data, zero operations. Not Postgres (no scale or concurrency need), not JSON
+files (sessions and counters are queried). Trade-off: on Render conversations and the daily counter reset on each
+restart; scores don't (the snapshot is unpacked again).
+
+## 4. Key decisions
+
+| # | Decision | Alternatives considered | Why |
+|---|---|---|---|
+| 1 | Code owns every fact (scores, places, confidence); the LLM explains; every number is checked (D1, D24, D28, D44, D52) | LLM computes or ranks; a `resolve_location` tool; model-stated confidence | Answers can't contain invented numbers or guessed places |
+| 2 | Own agent loop; final answer via a `submit_answer` tool (D12, D15) | LangChain/LangGraph; JSON response mode | The checks are custom anyway; Groq can't combine JSON mode with tools |
+| 3 | Groq free tier, chain qwen3.8-27b → gpt-oss-20b (D53, D56) | gpt-oss-120b (5/16), Gemini 3.6 flash (0/16) and 3.5 flash-lite (1/16), paid models | 16-question comparison through the real agent: 14/16 and 9/16; free tier only |
+| 4 | FEMA event frequency + observed weather, cross-checked; fixed scales, FEMA to the national p99 (D5, D30, D31, D33, D35) | FEMA risk score or dollar losses; percentile ranks; p95; hurricane intensity | FEMA risk includes social vulnerability and building value; ranks inflate tiny values; p95 capped 25 values at 100; intensity left out for time |
+| 5 | Weighted mean + flags that never change a score (extreme ≥ 80, winter "rare here") (D34, D36, D37) | Worst hazard, power mean, equal weights, FEMA loss weights, region-relative scores | Additive and explainable; extremes and preparedness still visible |
+| 6 | 20 hubs; any US place profiled on demand (D10) | A precomputed all-US city table | Open-Meteo's free 10K calls/day can't cover ~19K places |
+| 7 | SQLite + YAML (D3) | Postgres; JSON files | §3 |
+| 8 | Render free tier, committed snapshot, access code + caps, accept the 15-min sleep (D59–D61, D72) | HF Docker Spaces (paid), Fly/Railway/Koyeb (no free tier), keep-awake ping, user accounts | Free and simple; protects the LLM quota; the local run is the fallback |
+| 9 | 38 evals graded in code, every answer printed for human review (D64, D65) | LLM-as-judge | Cost and free-tier quota; deterministic grading |
+| 10 | Score alerts triggered by events, committed baseline, meaningful changes only (D76) | Schedule; SQLite baseline; any change | Scores change only on a data/config update; the host wipes SQLite |
+
+## 5. Scope and assumptions
+
+- **Hubs** (`config/hubs.yaml`): 20 synthetic hubs at metro centers, every Census region rankable (Midwest 6,
+  South 7, Northeast 2, West 5), every hazard regime at least twice.
+- **Exposure** = long-run hazard frequency at the hub (2016–2025 window), not financial loss. Live NWS alerts are a
+  separate layer and never change a score. "Last year" = previous calendar year; regions = Census regions.
+- **Out of scope:** forecasts beyond NWS alerts, costs/ROI, site specifics (flood zones, elevation), network
+  effects, climate trends, wildfire/drought/earthquake, hurricane intensity, non-US places, non-English, voice.
+
+## 6. Agent
+
+**Tools** (place names passed as the user wrote them, ≤ 4 per call):
+
+| Tool | Returns |
 |---|---|
-| `http_cache` | Raw upstream responses; history is cached permanently, recent data for a day |
-| `nri_counties` | FEMA National Risk Index for all 3,232 US counties (national scales, no runtime dependency on FEMA's service) |
-| `usage_counters` | Daily counters for the caps |
-| `turns` | Conversation history (full and compact forms) |
+| `rank_hubs(hazard, region, top_n)` | Ranking (top 5 by default), confidence + reason, flags, tie groups |
+| `get_risk_profile(places)` | WDRI, hazard scores, drivers, confidence, flags; 2+ places adds a computed comparison |
+| `get_weather_stat(places, metric, start, end)` | Day counts and %: NOAA airport station for hubs (≤ 30 years), grid model alongside or for other places (≤ 10 years) |
+| `get_active_alerts(places)` | Live NWS alerts |
+| `get_methodology(topic)` | The method, read from `scoring.yaml` |
 
-**Why SQLite:** one writer, tiny data, zero operations, and the pre-warmed cache ships in the repo as a 2.3 MB
-gzipped snapshot, so the demo doesn't depend on ~60 upstream calls. **Not Postgres:** no concurrency or scale
-need. **Not JSON files:** we query sessions and counters. Each request thread uses its own connection.
-Trade-off: on a free host the disk is ephemeral, so conversations and the daily counter reset on every restart
-(scores don't: the snapshot is unpacked again). For the same reason the alert baseline is a committed JSON file,
-not a table: a SQLite copy would be wiped on each deploy, exactly when config changes arrive. Workflow: change
-data or config, run the check (it alerts and updates the baseline), commit both.
-All scoring numbers live in `scoring.yaml`; every output carries a hash of it (`config_version`).
+**Confusing input** (resolver, in code): exact hub name/alias/airport code → hub; typo → fuzzy ≥ 85 accept,
+70–85 ask, none under 4 letters; shared name → the hub wins, a US namesake ≥ 50K is mentioned (Portland);
+ambiguous US name → ask (Springfield); other US place → live profile, "not one of our hubs" (25/day); non-US →
+out of scope unless a same-name US city ≥ 50K exists (Birmingham → AL); landmark → the model retries with the city.
 
-## 4. Scoring
+**Validation** of every `submit_answer`: strict schema, then semantics (hub IDs exist, clarifications have a
+question); **grounding** (every number must appear in a tool result, the conversation or the prompt); the
+**confidence line** must state the code's level (lowest of the turn) and, if not high, the conflicting facts. One
+repair retry; then code appends an "unverified numbers" note or writes the confidence line itself. Max 8 rounds.
+When all models are rate-limited: wait once (≤ 30 s), or tell the user the real wait.
 
-**Weather Disruption Risk Index (WDRI, 0–100)** = weighted mean of five hazard scores, weights by shutdown
-potential: winter 0.25, hurricane 0.25, flood 0.20, severe storms 0.20, heat 0.10.
+## 7. Scoring (`config/scoring.yaml`)
 
-- **Each hazard combines two independent sources:** FEMA NRI county event frequency (long national record)
-  and observed weather at the hub (Open-Meteo ERA5, 2016–2025: e.g. days ≥ 1 in snow, days ≥ 95°F).
-- **Scales:** observed measures on fixed, documented scales; FEMA frequencies linear up to the national
-  99th-percentile county. Both are absolute, so adding a hub changes no other score.
-- **Weighted mean, not "worst hazard":** additive, so every score breaks down exactly. A single extreme
-  hazard isn't hidden: any hazard ≥ 80 is flagged as a targeted-upgrade candidate. Other flags: winter
-  "rare here" (less-prepared regions), weight-sensitive rankings, ties within 5 points. Flags never change a score.
-- **Confidence** (high/medium/low) is computed in code: lowered for missing data, known location caveats, or
-  when FEMA and observed weather rank a hub ≥ 10 places apart. A low rating always states the conflicting facts
-  (e.g. Phoenix flood: FEMA 8.5 events/yr in the county vs 0.0 heavy-rain days/yr at the hub).
+**WDRI (0–100)** = weighted mean of five hazard scores; each hazard = weighted mean of its KPIs.
 
-## 5. Grounding and validation
+| Hazard (weight) | KPIs: FEMA NRI county frequency + observed weather at the hub (ERA5) |
+|---|---|
+| Winter (0.25) | FEMA winter weather, ice storm; days ≥ 1 in snow; ice days (high ≤ 32°F) |
+| Hurricane (0.25) | FEMA hurricane (counts events, not intensity) |
+| Flood (0.20) | FEMA inland + coastal flooding; days ≥ 2 in rain |
+| Severe storms (0.20) | FEMA tornado, hail, strong wind; days with gusts ≥ 47 mph |
+| Heat (0.10) | FEMA heat wave; days ≥ 95°F; days feels-like ≥ 105°F |
 
-The model answers by calling a strict `submit_answer` tool. Each answer is checked in code:
-1. **Schema** (constrained by the provider, then parsed with Pydantic) and semantic rules.
-2. **Grounding:** every number in the text must appear in a tool result, the conversation, or the prompt.
-   Tools return display-ready numbers and computed comparisons, so the model never calculates.
-3. **Confidence line:** the stated level must equal the code-computed one and, if low/medium, include the
-   conflicting facts.
-4. **One repair retry.** If numbers are still unverified, code appends a warning naming them; if the confidence
-   line is still wrong, code writes it. Previously unverified numbers never count as sources later.
+- **Scales:** observed KPIs on fixed documented scales; FEMA linear to the national 99th-percentile county. Both
+  absolute: adding a hub changes no score.
+- **Flags** (never change a score): extreme hazard ≥ 80; winter "rare here" (few snow/ice days, so less prepared);
+  weight-sensitive (rank moves ≥ 3 under equal weights); ties within 5 points.
+- **Confidence:** lowered for missing data, known location caveats, or when FEMA and observed weather rank a hub
+  ≥ 10 places apart (e.g. Phoenix flood: FEMA 8.5 events/yr in the county vs 0.0 heavy-rain days/yr at the hub).
 
-**Evaluation:** 38 end-to-end cases (the brief's questions, follow-ups, confusing input, scope/safety, data
-coverage), graded in code with facts computed live from the engine; every answer is printed for human review.
-Result: **34/38** (all 4 of the brief's questions pass). Failures: one wrong limit stated despite grounded
-numbers, one geography slip ("Gulf Coast" hubs), two rule-following slips by the fallback model
-([evals/results/eval_combined.md](evals/results/eval_combined.md)).
+## 8. Data sources
 
-## 6. Known limitations
+| Source | Use | Notes |
+|---|---|---|
+| FEMA National Risk Index | Hazard frequencies, 3,232 counties | December 2025 release |
+| Open-Meteo archive (ERA5, `era5_seamless`) + geocoding | Observed KPIs, grid stats, non-hub places | Free tier: 10K calls/day, non-commercial; ~157 calls per 10-year place |
+| NOAA GHCN-Daily | Airport station stats for hubs | 17 of 20 stations report snow (MIA, PHX, LAX use the grid) |
+| NWS alerts | Live alerts | US only |
 
-- **Free-tier LLMs:** the main model (qwen3.8-27b, 14/16 in our comparison) is a Groq preview model; the backup
-  (gpt-oss-20b) scored 9/16. Back-to-back questions may wait up to ~30 s for capacity.
-- **Grounding is lexical:** it checks that a number exists in the data, not that it's attached to the right hub;
-  claims without numbers aren't checked. The eval set covers this; the code doesn't. Example from the evals: an
-  answer said "exceeds the 10-year limit" (the limit is 30 years); "10" passed because it appears in a tool description.
-- **Eval result 34/38:** besides the case above, one geography slip (inland hubs called "Gulf Coast") and two
-  rule-following slips by the fallback model (not naming a non-hub place; not flagging an extreme hazard).
-- **At least two model calls per data answer** (tool call, then `submit_answer`): Groq can't combine JSON-schema
-  output with tool use.
-- **Unvalidated scores:** no real closure data, so thresholds and weights are documented judgment calls. FEMA
-  data is county-level; hurricane scores count events, not intensity (Boston's county equals Houston's); hubs
-  sit at metro centers.
-- **Prompt-only rules:** staying in scope and ignoring instructions inside tool data rely on the model (tested by evals).
-- **Free hosting sleeps:** after 15 idle minutes the first request takes about a minute (the page shows a
-  wake-up message and retries); each restart clears conversations and the daily counter.
-- **Operations:** manual cache refresh; Open-Meteo's free tier is non-commercial and capped at 10K calls/day;
-  a change in FEMA's service fields makes the refresh fail loudly.
+## 9. Evaluation
+
+38 end-to-end cases in 5 groups (the brief's questions, follow-ups, confusing input, scope/safety, coverage),
+graded in code with facts computed live from the engine, plus pairing checks (hub and number in one sentence).
+**Result: 34/38 after human review** ([report](evals/results/eval_combined.md)). It combines, per case, the latest
+valid result of the runs on the shipping chain on 2026-11-25: run 1 (log only, its answers weren't saved) for 23
+cases, run 14:42 UTC for 6, run 19:39 for 8, run 19:49 for 1. Single-model runs (15:03, 15:11, 19:05) are kept as
+comparisons, not counted. Failures: C11 and E8 (gpt-oss-20b skipped a rule), E4 (qwen called inland hubs "Gulf
+Coast"), D7 (passed the checks but stated a wrong limit; failed on review). Later code changes (D75, D77, D78) were
+verified with deterministic checks only; after D75, case D3 passed once on each model.
+
+## 10. Known limitations
+
+- **Free-tier LLMs:** qwen3.8-27b is a Groq preview model; the backup gpt-oss-20b follows rules less well. Groq
+  allows 200K tokens/day per model, about 6–8K tokens per answer in the evals.
+- **Grounding is lexical:** a number must exist in the data, but the check can't tell whether it's attached to the
+  right hub; claims without numbers aren't checked. Numbers in the user's own message count as grounded.
+- **Unvalidated scores:** no real closure data, so thresholds and weights are documented judgment calls. FEMA data
+  is county-level; hurricane scores count events (Boston's county equals Houston's).
+- **Prompt-only rules:** staying in scope and ignoring instructions inside tool data (covered by evals).
+- **Free hosting:** sleeps after 15 idle minutes (~1 min wake-up, the page retries); restarts clear conversations.
+- **Operations:** manual data refresh; Open-Meteo's free tier is non-commercial.
