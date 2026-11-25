@@ -1,0 +1,92 @@
+# Weather Disruption Risk Index (WDRI) — scoring configuration (PLAN.md §4).
+# Every number here is a judgment call documented with its reason; change it here, never in chat.
+
+baseline_window: {start: "2016-01-01", end: "2025-12-31"}
+
+# Hazard weights (sum to 1). By shutdown potential (D8): heat mostly degrades throughput and rarely
+# closes a hub, so it weighs least.
+hazard_weights:
+  winter: 0.25
+  hurricane: 0.25
+  flood: 0.20
+  severe_convective: 0.20
+  heat: 0.10
+
+# KPIs per hazard. source: observed = Open-Meteo ERA5 grid at the hub point (2016-2025 average per year);
+# nri = FEMA National Risk Index county annualized frequency (events/yr), Dec 2025.
+# Normalization to 0-100:
+#   observed -> piecewise-linear anchors [[raw, score], ...], clipped. Anchors set after seeing the 20-hub
+#               spread (2026-11-25) at roughly "worst plausible US metro" in ERA5 terms.
+#   nri      -> linear from 0 to the national 95th-percentile county value (computed from all 3,232
+#               counties), clipped at 100. Keeps magnitude (0.30 vs 0.01/yr) and a data-driven scale top.
+hazards:
+  winter:
+    label: Winter
+    kpis:
+      - {id: snow_days_1in, label: "days with >= 1 in snowfall", source: observed, var: snowfall, op: ">=",
+         threshold: 2.54, unit: "days/yr", weight: 0.35, anchors: [[0, 0], [20, 100]],
+         note: "1 in = 2.54 cm; NOAA climate-normals threshold. Grid snow depth uses a fixed 7:1 ratio."}
+      - {id: ice_days, label: "days staying at or below freezing (Tmax <= 32F)", source: observed, var: tmax,
+         op: "<=", threshold: 0.0, unit: "days/yr", weight: 0.25, anchors: [[0, 0], [75, 100]]}
+      - {id: nri_winter_weather, label: "winter weather events (FEMA NRI)", source: nri, codes: [WNTW],
+         unit: "events/yr", weight: 0.25}
+      - {id: nri_ice_storm, label: "ice storm events (FEMA NRI)", source: nri, codes: [ISTM],
+         unit: "events/yr", weight: 0.15}
+      # Cold wave (CWAV) excluded: relative to local norms (D18).
+  hurricane:
+    label: Hurricane
+    kpis:
+      - {id: nri_hurricane, label: "hurricane events (FEMA NRI)", source: nri, codes: [HRCN],
+         unit: "events/yr", weight: 1.0,
+         note: "Counts events, not intensity: Boston's county (0.18/yr) equals Houston's. Intensity would need storm-track data (stretch goal)."}
+  flood:
+    label: Flood
+    kpis:
+      - {id: nri_flood, label: "inland + coastal flooding events (FEMA NRI)", source: nri, codes: [IFLD, CFLD],
+         unit: "events/yr", weight: 0.7,
+         note: "Summed, not averaged: a hub exposed to one kind of flooding isn't diluted by the other."}
+      - {id: heavy_precip_days, label: "days with >= 2 in (50 mm) rain", source: observed, var: precipitation,
+         op: ">=", threshold: 50.0, unit: "days/yr", weight: 0.3, anchors: [[0, 0], [4, 100]]}
+  severe_convective:
+    label: Severe storms (tornado/hail/wind)
+    # No cross-source check: the only observed KPI (gusts) is a known-weak proxy (reanalysis smooths
+    # convective gusts), so it must not downgrade confidence in FEMA's storm records (2026-11-25).
+    cross_check: false
+    kpis:
+      - {id: nri_tornado, label: "tornado events (FEMA NRI)", source: nri, codes: [TRND], unit: "events/yr", weight: 0.3}
+      - {id: nri_hail, label: "hail events (FEMA NRI)", source: nri, codes: [HAIL], unit: "events/yr", weight: 0.3}
+      - {id: nri_strong_wind, label: "strong wind events (FEMA NRI)", source: nri, codes: [SWND], unit: "events/yr", weight: 0.25}
+      - {id: gust_days, label: "days with gusts >= 47 mph (75 km/h)", source: observed, var: gust_max, op: ">=",
+         threshold: 75.0, unit: "days/yr", weight: 0.15, anchors: [[0, 0], [10, 100]],
+         note: "Low weight: reanalysis underestimates convective gusts."}
+  heat:
+    label: Heat
+    kpis:
+      - {id: hot_days_95f, label: "days with high >= 95F (35 C)", source: observed, var: tmax, op: ">=",
+         threshold: 35.0, unit: "days/yr", weight: 0.4, anchors: [[0, 0], [100, 100]]}
+      - {id: humid_heat_days, label: "days with feels-like >= 105F (40.5 C)", source: observed,
+         var: apparent_tmax, op: ">=", threshold: 40.5, unit: "days/yr", weight: 0.3, anchors: [[0, 0], [60, 100]]}
+      - {id: nri_heat_wave, label: "heat wave events (FEMA NRI)", source: nri, codes: [HWAV], unit: "events/yr", weight: 0.3}
+
+nri_scale_percentile: 95
+
+confidence:
+  min_coverage: 0.95            # observed data coverage below this -> medium
+  # Cross-source check, rank-based (scale-free): FEMA county data and observed weather rank a location
+  # >= this many places apart among the hubs -> low ("sources disagree"). An absolute-points check
+  # flagged 29 of 100 hazard scores because the two scales differ systematically (2026-11-25).
+  disagreement_rank_gap: 10
+  overall_min_contribution: 0.20  # overall confidence = lowest among hazards contributing >= 20% of WDRI
+  # Location-specific caveats that lower a hazard to medium (with this reason).
+  hub_caveats:
+    DEN: {winter: "Snowfall near the Front Range is terrain-sensitive; the ~10 km grid smooths it."}
+
+ranking:
+  tie_points: 5                 # hubs within 5 points: "not meaningfully different under this method"
+  weight_sensitive_rank_shift: 3  # overall rank moves >= 3 places under equal hazard weights -> flag
+
+display:                        # display-ready precision for numbers the tools return (D23)
+  score: 0                      # decimals
+  days_per_year: 1
+  percent: 1
+  frequency_sig_figs: 2
