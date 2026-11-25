@@ -216,6 +216,8 @@ class Agent:
                 debug["rounds"] += 1
                 debug["tokens"] += lt.usage.get("total", 0)
                 debug["providers"].append(f"{lt.provider}:{lt.model}")
+                for c in lt.tool_calls:   # gpt-oss sometimes prefixes tool names ("functions.submit_answer")
+                    c.name = c.name.removeprefix("functions.")
                 if not lt.tool_calls:   # shouldn't happen with tool_choice="required"; nudge
                     messages.append({"role": "assistant", "content": lt.text or ""})
                     messages.append({"role": "user", "content": "Finish by calling submit_answer."})
@@ -236,9 +238,10 @@ class Agent:
                     debug["tool_calls"].append({"name": call.name, "arguments": call.arguments,
                                                 "ms": int((time.perf_counter() - c0) * 1000), "error": is_err})
                     debug["tool_results"].append({"tool": call.name, "result": result})
-                    if not is_err and call.name in DATA_TOOLS:
-                        data_results.append((call.name, result))
-                        sources.append(content)
+                    if call.name in DATA_TOOLS:
+                        sources.append(content)   # tool output, incl. error messages ("max 30 years"), is a source
+                        if not is_err:
+                            data_results.append((call.name, result))
                     tool_msg = {"role": "tool", "tool_call_id": call.id, "content": content}
                     messages.append(tool_msg)
                     turn_msgs.append(tool_msg)
@@ -249,7 +252,7 @@ class Agent:
                         turn_msgs.append(dup)
                 if submit is None:
                     continue
-                levels = [r.get("confidence") for _, r in data_results if r.get("confidence")]
+                levels = [r.get("confidence") for _, r in data_results if r.get("confidence") in _LEVELS]
                 expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
                 expected_reason = next((r["confidence_reason"] for _, r in data_results
                                         if r.get("confidence") == expected and r.get("confidence_reason")), None)
@@ -283,11 +286,15 @@ class Agent:
                                   "Please try again in a minute.")
             debug["events"].append(f"all providers failed: {e}")
             turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
+        except Exception as e:  # noqa: BLE001 - a bug must not become an HTTP 500 mid-demo; it's logged in debug
+            final = _error_answer("Sorry, something went wrong while answering. Please try again.")
+            debug["events"].append(f"internal error: {type(e).__name__}: {e}")
+            turn_msgs = [user_msg]
 
         debug["events"] = getattr(self.provider, "events", [])[events_before:] + debug["events"]
         debug["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         answer = final.model_dump()
-        levels = [r.get("confidence") for _, r in data_results if r.get("confidence")]
+        levels = [r.get("confidence") for _, r in data_results if r.get("confidence") in _LEVELS]
         confidence = min(levels, key=lambda c: _LEVELS[c]) if levels and final.response_type == "answer" else None
         ungrounded = verdict.ungrounded if (verdict and final is verdict.answer) else []
         self._save(session_id, message, turn_msgs, {**answer, "unverified_numbers": ungrounded})

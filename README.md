@@ -12,7 +12,11 @@ and decision log: [PLAN.md](PLAN.md). Setup and run commands: [CLAUDE.md](CLAUDE
   ~30 s. Gemini's free tier failed (rate limits, empty 400 errors) and is disabled.
 - **Grounding is lexical.** Every number in an answer must appear in a tool result, but the check can't tell
   whether a correct number is attached to the right hub or hazard, and claims without numbers aren't checked.
-  The eval set covers this; the code doesn't.
+  The eval set covers this; the code doesn't. Example from the evals: an answer said "exceeds the 10-year limit"
+  for a hub (the limit is 30 years); "10" passed because it appears in the tool description.
+- **Eval result: 34/38** ([report](evals/results/eval_combined.md)). Besides the case above: one geography slip
+  (inland hubs called "Gulf Coast") and two rule-following slips by the fallback model (not naming a non-hub
+  place; not flagging an extreme hazard).
 - **The score can't be validated against real closures.** Thresholds, scales and weights are documented
   judgment calls (no company disruption data). FEMA data is county-level (large or mountainous counties can
   inflate flood/winter frequencies; such cases are flagged as low confidence). Hurricane scores count events,

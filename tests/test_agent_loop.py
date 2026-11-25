@@ -176,6 +176,42 @@ def test_verified_numbers_from_earlier_answers_still_count(agent_factory):
     assert not agent.chat("Was it 32?", sid).unverified
 
 
+def test_methodology_result_never_breaks_confidence(tmp_path, monkeypatch):
+    """Regression (eval run 1 crashed): a tool result whose 'confidence' isn't a level must be ignored."""
+    monkeypatch.setattr(loop_mod, "run_tool", lambda ctx, n, a: ({"confidence": "lowered when data is missing"}, False))
+    http = CachedHttp(connect(tmp_path / "t.db"))
+    agent = Agent(Script(call("get_methodology", {"topic": "overall"}, 1),
+                         call("submit_answer", answer("Weights are configured.", locations=[]), 2)),
+                  ToolContext(http, ScoringService(http), date(2026, 11, 25)))
+    r = agent.chat("How is the score calculated?")
+    assert r.answer["response_type"] == "answer" and r.confidence is None
+
+
+def test_real_methodology_tool_has_no_confidence_field(tmp_path):
+    from app.agent.tools import MethodArgs, get_methodology
+    http = CachedHttp(connect(tmp_path / "t.db"))
+    out = get_methodology(ToolContext(http, ScoringService(http), date(2026, 11, 25)), MethodArgs(topic="overall"))
+    assert "confidence" not in out and "confidence_rules" in out
+
+
+def test_tool_error_message_counts_as_grounding_source(tmp_path, monkeypatch):
+    """Eval run 2: quoting the tool's own error ('max 30 years') must not be flagged as unverified."""
+    monkeypatch.setattr(loop_mod, "run_tool",
+                        lambda ctx, n, a: ({"error": "window too long: max 30 years for hubs"}, True))
+    http = CachedHttp(connect(tmp_path / "t.db"))
+    agent = Agent(Script(call("get_weather_stat", {}, 1),
+                         call("submit_answer", answer("That exceeds the 30-year limit.", rtype="clarification",
+                                                      clarifying_question="Shorter range?", locations=[]), 2)),
+                  ToolContext(http, ScoringService(http), date(2026, 11, 25)))
+    assert not agent.chat("Snow days since 1980?").unverified
+
+
+def test_prefixed_tool_name_is_normalized(agent_factory):
+    p = Script(call("functions.submit_answer", answer("I only cover US weather risk.", rtype="out_of_scope", locations=[]), 1))
+    r = agent_factory(p).chat("poem")
+    assert r.answer["response_type"] == "out_of_scope" and r.debug["rounds"] == 1
+
+
 def test_confidence_line_is_recognized_in_common_formats():
     for line in ["Confidence: low - x", "**Confidence:** low — x", "Confidence – low: x", "confidence - LOW"]:
         assert stated_confidence(line) == "low", line
@@ -226,6 +262,17 @@ def test_no_wait_when_a_failure_is_not_a_rate_limit():
 
 
 # --- weather-stat window trimming (D45) ---------------------------------------------
+
+def test_covered_tail_skips_years_without_station_records():   # D70 (eval case D7: Denver 1996-2005)
+    from app.agent.tools import covered_tail
+    from app.data.series import calendar
+    dates = calendar("2019-01-01", "2021-12-31")
+    vals = [None if d < "2020-01-01" else 0.0 for d in dates]           # no records in 2019
+    s = DailySeries("t", dates, {"snowfall": vals}, {}, {})
+    tail = covered_tail(s, "snowfall")
+    assert tail is not None and tail.dates[0] == "2020-01-01" and tail.coverage("snowfall") == 1.0
+    assert covered_tail(DailySeries("t", dates, {"snowfall": [None] * len(dates)}, {}, {}), "snowfall") is None
+
 
 def test_trim_to_data_cuts_trailing_missing_days():
     s = DailySeries("t", ["d1", "d2", "d3", "d4"], {"snowfall": [0.0, 1.0, None, None]}, {}, {})

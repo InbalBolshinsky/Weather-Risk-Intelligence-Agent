@@ -1,0 +1,48 @@
+[FAIL] A1_midwest_winter      groq-gpt-oss-20b:openai/gpt-oss-20b  MSP paired with 55 in one sentence; not an error
+[PASS] A2_compare_mia_hou     groq-qwen3.8-27b:qwen/qwen3.8-27b  
+[PASS] A3_denver_snow         groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] A4_dallas_why          groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] B1_followup_overall    groq-gpt-oss-20b:openai/gpt-oss-20b  
+[FAIL] B2_followup_flood      groq-gpt-oss-20b:openai/gpt-oss-20b  Dallas paired with 48 in one sentence
+[PASS] B3_followup_second     groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C1_typo                groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C2_portland            groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C3_springfield         groq-qwen3.8-27b:qwen/qwen3.8-27b  
+[PASS] C4_landmark            groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C5_non_us              groq-qwen3.8-27b:qwen/qwen3.8-27b  
+[FAIL] C6_us_namesake         groq-gpt-oss-20b:openai/gpt-oss-20b  mentions one of ('not one of our hubs', 'not a hub', "isn't one of our", 'not part of')
+[PASS] C7_airport_code        groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C8_no_place            groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C9_five_places         groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] C10_fuzzy_suggest      groq-gpt-oss-20b:openai/gpt-oss-20b  
+[FAIL] C11_state_qualifier    groq-gpt-oss-20b:openai/gpt-oss-20b  mentions one of ('Maine', 'Portland, ME'); mentions one of ('not one of our hubs', 'not a hub', "isn't one of our", 'not part of')
+[FAIL] C12_partial            groq-gpt-oss-20b:openai/gpt-oss-20b  mentions one of ('Miami',); mentions one of ('Springfield',)
+[PASS] D1_off_topic           groq-gpt-oss-20b:openai/gpt-oss-20b  
+[FAIL] D2_forecast            groq-gpt-oss-20b:openai/gpt-oss-20b  has a confidence line
+[PASS] D3_injection           groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] D4_mixed_roi           groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] D5_no_tool_count       groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] D6_non_english         groq-gpt-oss-20b:openai/gpt-oss-20b  
+[FAIL] D7_window_too_long     groq-gpt-oss-20b:openai/gpt-oss-20b  handled without error; not an error
+[PASS] D8_future              groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] D9_no_tool_metric      groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] D10_gibberish          groq-gpt-oss-20b:openai/gpt-oss-20b  
+[PASS] E1_long_window         groq-gpt-oss-20b:openai/gpt-oss-20b  
+[FAIL] E2_non_hub             groq-gpt-oss-20b:openai/gpt-oss-20b  get_risk_profile with places ('boise',); mentions one of ('not one of our hubs', 'not a hub', "isn't one of our", 'not part of')
+Traceback (most recent call last):
+  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 133, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 108, in main
+    row = run_case(agent, case, a.pause)
+  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/evals/run_evals.py", line 38, in run_case
+    r = agent.chat(case.question, sid)
+  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/app/agent/loop.py", line 253, in chat
+    expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
+               ~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/inbal/Desktop/Weather-Risk-Intelligence-Agent/app/agent/loop.py", line 253, in <lambda>
+    expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
+                                         ~~~~~~~^^^
+KeyError: 'lowered when data is missing, when FEMA county data and observed weather rank a hub >= 10 places apart, or for known location caveats'
+
+[exited with code 1]

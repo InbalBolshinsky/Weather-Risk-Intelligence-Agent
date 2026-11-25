@@ -242,6 +242,19 @@ def trim_to_data(series: DailySeries, var: str) -> tuple[DailySeries, str | None
     return series.window(series.dates[0], series.dates[last]), series.dates[last]
 
 
+def covered_tail(series: DailySeries, var: str, min_cov: float = STATION_MIN_COVERAGE,
+                 min_days: int = 365) -> DailySeries | None:
+    """D70: the longest recent span (starting on a year boundary) where the station really measured `var`.
+    E.g. Denver airport has no snowfall records 1996-2005, so a 1996-2025 question uses 2006-2025."""
+    vals = series.values.get(var, [])
+    for year in sorted({d[:4] for d in series.dates}):
+        i = next(k for k, d in enumerate(series.dates) if d[:4] == year)
+        tail = vals[i:]
+        if len(tail) >= min_days and sum(v is not None for v in tail) / len(tail) >= min_cov:
+            return series.window(series.dates[i], series.dates[-1])
+    return None
+
+
 def _counts(series: DailySeries, m: Metric, station: bool) -> list[dict]:
     rows = []
     for label, st_thr, grid_thr in m.thresholds:
@@ -297,9 +310,15 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
         if hub and m.station:
             stn, stn_last = trim_to_data(ghcn.station_daily(ctx.http, hub.station, s, e), m.var)
             cov = stn.coverage(m.var)
+            if stn_last and cov < STATION_MIN_COVERAGE:
+                tail = covered_tail(stn, m.var)      # D70: use only the years the station actually measured
+                if tail is not None:
+                    entry["station_note"] = (f"{hub.station_name} has no {m.var} records before {tail.dates[0]}; "
+                                             f"counts cover {tail.dates[0]} to {stn_last} only")
+                    stn, cov = tail, tail.coverage(m.var)
             if stn_last and cov >= STATION_MIN_COVERAGE:
                 primary = {"source": f"NOAA weather station: {hub.station_name} ({hub.station})",
-                           "data_through": stn_last, "data_coverage": fmt_percent(100 * cov, 0),
+                           "period": f"{stn.dates[0]} to {stn_last}", "data_coverage": fmt_percent(100 * cov, 0),
                            "counts": _counts(stn, m, True)}
             else:
                 entry["station_note"] = (f"{hub.station_name} reports this on only {fmt_percent(100 * cov, 0)} of days; "
@@ -317,7 +336,7 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
                 reason = ("no station snowfall measurements here, so the count comes from the grid model, which "
                           "tends to overcount light-snow days")
         else:
-            results.append({**entry, "note": "no data available for this window"})
+            results.append({**entry, "note": "NO DATA for this window: this is not zero; do not report a count"})
             continue
         entry["window"] = {"start": s, "requested_end": e}
         if a.metric == "snow_days":
@@ -359,7 +378,7 @@ def get_methodology(ctx: ToolContext, a: MethodArgs) -> dict:
             "weights_rationale": "by shutdown potential: heat mostly slows operations and rarely closes a hub",
             "normalization": ("observed-weather KPIs: fixed scales set at roughly the worst plausible US metro; "
                               "FEMA KPIs: linear from 0 to the national 95th-percentile county"),
-            "confidence": ("lowered when data is missing, when FEMA county data and observed weather rank a hub "
+            "confidence_rules": ("lowered when data is missing, when FEMA county data and observed weather rank a hub "
                            f">= {cfg.confidence.disagreement_rank_gap} places apart, or for known location caveats"),
             "ties": f"hubs within {fmt_score(cfg.ranking.tie_points)} points are not meaningfully different",
             "flags": (f"extreme hazard = any hazard scoring >= {fmt_score(cfg.flags.extreme_hazard_score)} "

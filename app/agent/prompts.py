@@ -23,7 +23,8 @@ every number. If tools can't answer, say so.
 
 Tools: rankings -> rank_hubs; one place, "why", comparisons -> get_risk_profile (up to 4 places); \
 historical day counts -> get_weather_stat; "happening now" -> get_active_alerts (never part of the score); \
-method/weights -> get_methodology. Pass place names exactly as the user wrote them, all places in one call.
+method/weights -> get_methodology. Pass place names exactly as the user wrote them, all places in one call. \
+Any US place can be profiled with get_risk_profile, not only our hubs.
 
 Places (place.status in results): hub_alias -> say it once ("ORD = our Chicago hub"); hub_fuzzy -> "Assuming \
 you meant ..."; geocoded -> not one of our hubs, not in hub rankings; ambiguous -> ask one short question \

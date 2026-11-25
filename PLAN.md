@@ -2,8 +2,8 @@
 
 Living plan; decisions are recorded in the **Decision log** (D1…). Working mode and rules: `CLAUDE.md`.
 
-**Status (2026-11-25):** steps 0–5 done (chain qwen3.8-27b → gpt-oss-20b, D56; API + chat page, D59–D63).
-Next: step 6 (eval set). Known limitations: README.
+**Status (2026-11-25):** steps 0–6 done (chain qwen3.8-27b → gpt-oss-20b, D56; API + chat page, D59–D63;
+eval 34/38, D71). Next: step 7 (deploy). Known limitations: README.
 
 **Guiding principle:** the best agent for this assignment, judged by clarity, control, reliability, and
 simplicity to run. Free-tier services only (D53).
@@ -29,11 +29,11 @@ questions. It never computes a number: every number in an answer is checked agai
 | 1 | Verify every external API with real calls; save fixtures (`scripts/verify_apis.py`) | ✅ |
 | 2 | Data clients, SQLite cache, refresh script (`app/data`, `app/store`, `config/hubs.yaml`) | ✅ |
 | 3 | Scoring engine + config + tests (`app/scoring`, `config/scoring.yaml`), reviewed (D33–D37) | ✅ |
-| 4 | Agent: resolver, tools, prompt, loop, validation, provider chain (`app/agent`, `app/geo`, `app/llm`) | ✅ (chain order open) |
+| 4 | Agent: resolver, tools, prompt, loop, validation, provider chain (`app/agent`, `app/geo`, `app/llm`) | ✅ (chain qwen → gpt-oss-20b, D56) |
 | 5 | FastAPI + single-page chat UI (`app/main.py`, `web/index.html`) | ✅ |
-| 6 | Eval set (~25–30 questions) + runner | |
+| 6 | Eval set (38 cases) + runner + combined report (`evals/`): 34/38 | ✅ |
 | 7 | Deploy to a URL | |
-| 8 | README, ARCHITECTURE.md, export AI session | |
+| 8 | README, DESIGN.md (✅ drafted from this plan), export AI session | |
 | — | Stretch: score-change webhook; hurricane-intensity KPI | |
 
 Time is flexible (D20). If something must slip: observed-gust KPI, non-hub scoring, weight-sensitivity
@@ -114,7 +114,9 @@ app/         config.py; data/ (clients, cache); store/ (SQLite); scoring/; geo/ 
 scripts/     verify_apis.py, refresh_data.py, chat_cli.py, model_bakeoff.py
 tests/       offline pytest (fixtures, fake geocoder, scripted fake model)
 evals/       results/ (git-ignored); eval set in step 6
-web/, app/main.py, Dockerfile, README.md, docs/ARCHITECTURE.md, session/   [steps 5–8]
+web/, app/main.py      chat page + API [step 5]
+DESIGN.md              design document (deliverable); PLAN.md stays the working log
+Dockerfile, session/   [steps 7–8]
 ```
 
 ### 2.4 API (D63)
@@ -359,4 +361,12 @@ and kept out of hub rankings (D10).
 | D61 | Daily cap ~80 questions (below Groq's daily quotas: ~25–40 qwen + ~50 gpt-oss-20b answers), resets 00:00 UTC; the page shows questions left and a clear banner when reached | Accepted (user) |
 | D62 | Chat UI = one static HTML page (plain JS) served by FastAPI: answer text, clarification/follow-up buttons, "waiting for capacity" message, New chat | Accepted (user) |
 | D63 | Endpoints (B): `GET /` page, `POST /api/chat`, `GET /api/status` (health + questions left + versions), LLM-free `GET /api/rankings`, FastAPI's interactive `/docs`. Only `/api/chat` needs the access code (the only endpoint that spends LLM quota) | Accepted (user) |
+| D64 | Eval set = 38 end-to-end cases in 5 groups (brief's questions, follow-ups, confusing input, scope/safety, data coverage), incl. low-confidence facts, flags, fuzzy-suggest, partial answers, window limits, no-tool temptations | Accepted (user) |
+| D65 | Grading in code: per-case checks (response type, tools where they matter, facts computed live from the engine, forbidden behavior), **pairing checks** (hub and its number in the same sentence/bullet), universal checks (no error, no unverified numbers, confidence line); follow-ups may answer from history; every answer printed in the report for human review. No LLM judge (cost, §1.3) | Accepted (user) |
+| D66 | One full run, then re-run failed cases once (pass on re-run = flaky; fail twice = real); report records which model answered | Accepted (user) |
+| D70 | Weather stats with station gaps: use only the years the station actually measured (e.g. Denver airport has no snowfall records 1996–2005 → 2006–2025) and say so; "no data" is stated as not-zero. Found by eval case D7; the D46 check had verified rows, not per-element coverage | Accepted (user) |
+| D71 | Eval result (combined, D68): **34/38 after human review** (35/38 on code checks). Remaining: D7 states the wrong window limit (passes checks: lexical grounding), E4 picks inland hubs as "Gulf Coast" (qwen), C11 doesn't name Portland, ME / non-hub (gpt-oss-20b), E8 doesn't flag "extreme" (gpt-oss-20b). No code changes; documented as model limitations | Accepted (user) |
+| D67 | gpt-oss-20b at `reasoning_effort: low` (fewer output tokens); test inconclusive so far (rate limits), kept and marked unverified. gpt-oss-120b retested at default reasoning: earlier failures were quota, not model | Accepted (user); unverified |
+| D68 | Eval report = latest valid result per case across runs on the shipping chain (run 1 log, run 2, the 9-case run), labelled by run; run 1 saved no answer texts (crash), stated per case. Fixes between runs noted as a caveat | Accepted (user) |
+| D69 | Rate-limit improvement (skip a model whose daily quota is exhausted until its `retry-after`; honest "quota used up, try in ~N min" message) | Deferred (user) |
 | D58 | Step-4 weakness review: fix #4 now (D57); SQLite per-request connections in step 5; stronger evals in step 6; the rest documented in README "Known limitations" | Accepted (user) |

@@ -14,13 +14,13 @@ chain:
     key_env: GROQ_API_KEY
     model: openai/gpt-oss-20b
     max_output_tokens: 2048
+    extra: {reasoning_effort: low}   # R1 (D67): fewer output tokens; tested against the default before adopting
   - name: groq-gpt-oss-120b          # 5/16: frequent malformed tool calls
     base_url: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
     model: openai/gpt-oss-120b
     max_output_tokens: 2048
-    extra: {reasoning_effort: low}
-    enabled: false
+    enabled: false                   # re-testing at default reasoning (its 5/16 ran at "low")
   - name: gemini-flash-lite          # 1/16: empty 400 errors from Google's OpenAI-compatible endpoint
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     key_env: GOOGLE_API_KEY
