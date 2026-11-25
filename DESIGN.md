@@ -51,8 +51,10 @@ config/          hubs.yaml (20 hubs, aliases, airport stations) · scoring.yaml 
 web/             index.html (single-page chat) · icon.png
 data/            snapshot.db.gz (committed cache, 2.3 MB) · score_baseline.json (last alerted scores) · app.db (git-ignored)
 scripts/         chat_cli.py · refresh_data.py · check_scores.py · verify_apis.py · model_bakeoff.py · make_snapshot.py
+                 · export_session.py (redacted session export)
 tests/           92 offline tests in 6 files; fixtures/ (saved API responses); scripted fake model, no network
 evals/           cases.py (38 cases + checks) · run_evals.py · merge_reports.py · results/ (reports per run + combined)
+session/         transcript.md (readable AI session) · raw/ (redacted, gzipped session logs)
 render.yaml      Render Blueprint · requirements.txt / requirements-dev.txt · .env.example
 ```
 
