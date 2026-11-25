@@ -25,6 +25,10 @@ and decision log: [PLAN.md](PLAN.md). Setup and run commands: [CLAUDE.md](CLAUDE
   and not making the investment decision. Covered by eval cases, not enforced in code.
 - **Every data answer costs at least two model calls** (tool call, then the final `submit_answer`), because
   Groq can't combine JSON-schema output with tool use.
+- **Free hosting sleeps.** The deployed demo runs on Render's free tier: after 15 minutes without visitors the
+  server sleeps, and the first request then takes about a minute while it wakes. Each restart also clears
+  conversations and resets the daily question counter (free-tier storage isn't persistent; scores are unaffected,
+  they ship in the data snapshot). Open the URL a couple of minutes before a demo, or run it locally.
 - **Data operations are manual.** The cache is refreshed with `scripts/refresh_data.py`. Open-Meteo's free
   tier is for non-commercial use (a company deployment needs the paid tier), and its 10,000 calls/day are
   shared by all users. FEMA's service could change its fields (the refresh fails loudly if it does).
