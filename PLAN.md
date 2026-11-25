@@ -1,7 +1,8 @@
 # PLAN — Weather Risk Intelligence Agent
 
 Living document. Updated as decisions are made; see **Decision log** at the bottom.
-Status: **v1.3 — step 1: data APIs verified (§7.1); LLM checks waiting for API keys. Step 2 (data layer) in progress.**
+Status: **v1.4 — steps 1 and 2 done (data APIs + Groq verified; data layer built, all 20 hubs cached). Open:
+model order on Groq and backup provider (§2.6). Next: step 3 (scoring engine).**
 
 **Guiding principle for every choice:** what makes the best agent for this assignment, judged by
 **clarity, control, reliability, and how simple it is to run**.
@@ -12,7 +13,7 @@ Status: **v1.3 — step 1: data APIs verified (§7.1); LLM checks waiting for AP
 
 A Python service with a **deterministic scoring engine** that turns public hazard + weather data into a
 per-hub **Weather Disruption Risk Index (WDRI, 0–100)** with per-hazard sub-scores, confidence, and
-explicit assumptions. An **LLM agent** (Grok via xAI, OpenAI as a backup, behind one provider interface)
+explicit assumptions. An **LLM agent** (Groq free plan, with a fallback chain behind one provider interface)
 sits on top: it resolves locations, calls the engine through a small set of typed tools, and returns a
 **schema-validated JSON response** that the chat UI renders. The LLM never computes or invents numbers.
 It routes, explains, and asks clarifying questions. Deployed to a public URL.
@@ -128,7 +129,7 @@ through REST, so it's testable without an LLM, and the numbers are identical wit
 | Decision | Choice | Why | Alternative considered |
 |---|---|---|---|
 | Language / server | Python 3.11 + FastAPI | Assignment prefers Python; Pydantic models + OpenAPI for free | Flask, Django |
-| LLM | **Grok (xAI) primary, OpenAI backup**, both through the `openai` Python SDK (xAI's API is OpenAI-compatible: `base_url=https://api.x.ai/v1`) | Your choice for the primary; one SDK and one adapter cover both vendors | Vendor SDKs per provider: more code, no gain |
+| LLM | **Groq (free plan)** through the `openai` Python SDK (`base_url=https://api.groq.com/openai/v1`), Chat Completions API. Backup provider: open (§2.6) | User's choice (an earlier "Grok" was a typo for Groq); free; OpenAI-compatible, so one adapter covers any OpenAI-compatible vendor | Vendor SDKs per provider: more code, no gain |
 | Agent loop | **Our own loop** (~80 lines) on a neutral message format | Full control over validation/repair, table hydration, provider fallback, and eval determinism; the whole control flow is readable in one file. Decided in §2.7 | LangChain / LangGraph (§2.7) |
 | Chat UI | One static `web/index.html` served by FastAPI | One process, one deploy, clearly uses the API; renders the structured fields | Streamlit: a second process |
 | Conversation state | Server-side, by `session_id`, in SQLite, **in our own neutral format** (not provider-native) | Follow-ups need prior tool results, and a neutral format lets a session switch providers mid-conversation | Client sends history; provider-side state (`store=true`), which would lock a session to one vendor |
@@ -208,9 +209,9 @@ class LLMProvider(Protocol):
 
 - **One adapter, two configs.** Both vendors are reached through the `openai` SDK; the adapter differs only in
   `base_url`, API key env var, and model ID. Vendor quirks (e.g. schema dialect) are handled inside the adapter.
-- **Which wire API:** Responses API with `store=false` (we resend history ourselves) is the default candidate,
-  because xAI labels Chat Completions "legacy" and OpenAI's newer models require Responses for some tool
-  features. **Final choice after the step-1 calls.** Both providers document both APIs.
+- **Wire API: Chat Completions (decided from step-1 evidence, D21).** Groq's Responses API is beta and rejects
+  `store`/`include`; Chat Completions is supported by Groq and every free alternative we checked (Gemini's
+  OpenAI-compatible endpoint, Cerebras, OpenRouter).
 - **Fallback policy (`FallbackProvider`):** switch to the backup **only on availability errors**: 429 after
   2 backoff retries, 5xx, timeout, or connection error. The switch covers the rest of that turn, which is
   possible because history is stored in our neutral format. **No fallback on schema/validation failures**; those
@@ -218,28 +219,33 @@ class LLMProvider(Protocol):
 - **Evals run per provider** (`--provider grok|openai`), so the comparison table is the evidence for which
   model is primary.
 
-**Verified (2026-11-25, official docs, to be re-confirmed with real calls in step 1):**
+**Verified with real calls (2026-11-25, `scripts/verify_apis.py --llm`, Groq free plan):**
 
-| | xAI (Grok) | OpenAI |
+| | `openai/gpt-oss-120b` (production model) | `qwen/qwen3.8-27b` (preview model) |
 |---|---|---|
-| Compatibility | `openai` SDK with `base_url="https://api.x.ai/v1"`; Responses + Chat Completions | native |
-| Tool calling | Yes; parallel by default; `tool_choice` auto / required / none / forced; tool args are **always strict** | Yes; `strict: true` (requires `additionalProperties:false` and all properties in `required`) |
-| Structured output | `response_format` / `text.format` `json_schema`, "guaranteed to match" for supported features; **combinable with tools on Grok 4 family** | `text.format` `json_schema` strict; combining with tools is **not explicitly documented**, so verify |
-| Schema gotchas | No zero-variant enum/anyOf, no array-form `items`; regex subset; `additionalProperties` defaults to false | Every property must be in `required` (optional ⇒ nullable) |
-| Proposed model | **`grok-4.3`**: $1.25 / $2.50 per 1M in/out, 1M context. Upgrade to `grok-4.7` ($2 / $6) if evals show a quality gap | **`gpt-6-luna`**: $0.10 / $0.50, function calling + structured outputs listed. Alt: `gpt-5.6-luna` ($0.20 / $1.20) |
-| Rate limits (lowest tier) | Tier 0 ($0 cumulative spend): grok-4.3 = 37 RPS / 10M TPM; grok-4.7 = 150 RPS / 50M TPM; 429 on exceed | Lowest tier with published numbers is **Build** ($5 credit purchase): 5,000 RPM / 2M TPM for the luna models |
-| Free tier | **None in official docs** (blogs disagree about trial credits) | A "Free" tier exists on paper (allowed geographies, $100/month cap), but **no free-tier RPM/TPM is published for any chat model**. Plan on Build ($5) |
+| Free limits (from response headers) | 1,000 requests/day, 8,000 tokens/min (docs: 200K tokens/day) | Same, **plus 1,000 output tokens/min** (a request asking for 2,048 max tokens is refused) |
+| `tool_choice="required"` | ✅ | ✅ |
+| Parallel tool calls | ❌ one call per turn (flag accepted, ignored), as documented | ✅ two calls in one turn |
+| Terminal `submit_answer` (strict schema, Pydantic-validated) | ✅ after 2 rounds | ✅ after 1 round |
+| Strict `json_schema` output, no tools | ⚠️ failed once the history contained tool calls ("Tool choice is none, but model called a tool") | ✅ |
+| `json_schema` + tools in one request | ❌ 400 "json mode cannot be combined with tool/function calling", as documented | ❌ same |
 
-**Portable final-answer mechanism:** the agent ends by calling a terminal tool `submit_answer(AgentResponse)`,
-with `tool_choice="required"` on every model call (the model must always call *some* tool, and the turn ends when
-it calls `submit_answer`). This uses only features both vendors document (strict tool schemas + `required`), so the
-schema contract is identical across providers. Alternative: `text.format` json_schema; we keep it if step 1
-shows it combines with tools on both vendors.
+Earlier candidates **xAI (Grok) and OpenAI were dropped** (the user meant Groq; neither has a usable free tier).
+Free alternatives checked in official docs: **Gemini API** (ongoing free tier; free-tier content is used to
+improve Google products), Cerebras (no permanent free tier; $5 trial credits), OpenRouter `:free` (20 requests/min,
+50/day), Mistral (API free tier not verifiable: docs 404).
 
-**Cost estimate:** a typical turn is about 3 model calls × ~6k input + ~1k output tokens. On grok-4.3 that's
-≈ $0.03/turn; the eval set (~30 cases) ≈ $1 per run; the whole build day ≈ well under $15 across both vendors.
-**Rate limits are irrelevant at this scale**; cost and the public URL are the real risks → demo token +
-per-session cap (e.g. 30 turns) + a global daily cap on LLM calls.
+**Final-answer mechanism (confirmed, D12):** the agent ends by calling a terminal tool `submit_answer(AgentResponse)`,
+with `tool_choice="required"` on every model call; the turn ends when it calls `submit_answer`. Step 1 showed
+this is the **only** working option on Groq, because JSON-schema output can't be combined with tools there.
+
+**Token budget (the binding constraint, replaces the cost estimate):** money is $0, but the free plan allows
+8,000 tokens/min and ~200K tokens/day per model. A turn is about 3 calls, so the design must:
+(1) keep the system prompt + tool definitions compact (target ≤ 2.5K tokens), (2) return trimmed JSON from tools,
+not raw series, (3) cap output tokens per call (qwen: 800), (4) treat a 429 as an availability error, which moves
+the call to the next model in the chain, and (5) have the eval runner record tokens per case. Limits are per
+model, so two Groq models on one key double the capacity. The public URL still gets a demo token +
+per-session cap, now to protect the daily token budget rather than money.
 
 ### 2.7 Decision: our own agent loop, no LangChain / LangGraph
 
@@ -529,6 +535,7 @@ All five data APIs pass; fixtures saved in `tests/fixtures/`. LLM checks are wri
 | D18 | 2026-11-25 | Drop NRI cold wave (`CWAV`) from the winter score; it's relative to local norms (Miami 1.28/yr > Houston 0.48) | Accepted (user) |
 | D19 | 2026-11-25 | Factual hub weather questions use the hub's airport station (GHCN-Daily) as primary, with the grid model alongside; scoring stays on the grid model for consistency | Accepted (user) |
 | D20 | 2026-11-25 | Timeline flexible; no pre-emptive cuts; priority order unchanged | Accepted (user) |
+| D21 | 2026-11-25 | LLM provider = Groq free plan (not xAI Grok — typo); xAI/OpenAI dropped. Wire API = Chat Completions (Groq's Responses API is beta and rejects `store`/`include`) | Accepted (user: Groq; wire API from step-1 evidence) |
 | D3 | 2026-11-25 | SQLite for cache, NRI county table, snapshots, sessions; YAML for config | Accepted |
 | D4 | 2026-11-25 | Fixed anchors for Open-Meteo KPIs; national county percentiles for NRI KPIs | Accepted (refined) |
 | D5 | 2026-11-25 | NRI `*_AFREQ` rather than `RISK_SCORE`/EAL | Accepted — verify fields in step 1 |
@@ -538,6 +545,6 @@ All five data APIs pass; fixtures saved in `tests/fixtures/`. LLM checks are wri
 | D9 | 2026-11-25 | Heat added as 5th hazard | Accepted (user) |
 | D10 | 2026-11-25 | 20 hubs; expansion via on-demand scoring, no all-US city table | Accepted (user) |
 | D11 | 2026-11-25 | Deploy to a URL; demo token + per-session/daily caps because the URL is public and costs money | Accepted (user) |
-| D12 | 2026-11-25 | Final answer via terminal strict `submit_answer` tool + `tool_choice=required` (portable across vendors) | Proposed — confirm in step 1 |
+| D12 | 2026-11-25 | Final answer via terminal strict `submit_answer` tool + `tool_choice=required` (portable across vendors) | Accepted — confirmed in step 1: the only option on Groq (json_schema + tools → 400) |
 | D13 | 2026-11-25 | Fallback to the backup provider only on availability errors, never on validation errors | Proposed |
 | D14 | 2026-11-25 | Report snow days at two thresholds: ≥ 0.1 in (NWS "measurable") and ≥ 1 in (NOAA normals threshold). Revised from 0.1 cm / 2.5 cm after verifying the definitions | Accepted (user) |

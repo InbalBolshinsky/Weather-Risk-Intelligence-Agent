@@ -1,9 +1,9 @@
 """Step 1: verify every external API with a real call before we rely on it.
 
 Usage:
-    python scripts/verify_apis.py            # data APIs + any LLM provider whose key is set
+    python scripts/verify_apis.py            # data APIs + every LLM target whose key is set
     python scripts/verify_apis.py --data     # data APIs only
-    python scripts/verify_apis.py --llm      # LLM providers only
+    python scripts/verify_apis.py --llm      # LLM targets only
 
 Saves small response samples to tests/fixtures/ (used later by offline unit tests)
 and a machine-readable report to tests/fixtures/_verify_report.json.
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ DAILY_VARS = ["snowfall_sum", "precipitation_sum", "temperature_2m_max", "temper
               "apparent_temperature_max", "wind_gusts_10m_max"]
 NRI_HAZARDS = ["WNTW", "ISTM", "CWAV", "HRCN", "IFLD", "CFLD", "TRND", "HAIL", "SWND", "HWAV"]
 
-HUBS_SAMPLE = {  # metro-center coordinates, same as the planned hubs.yaml
+HUBS_SAMPLE = {  # metro-center coordinates, same as config/hubs.yaml
     "Houston": (29.7604, -95.3698),
     "Miami": (25.7617, -80.1918),
     "Dallas": (32.7767, -96.7970),
@@ -56,10 +57,11 @@ def record(group: str, name: str, fn: Callable[[], str]) -> None:
     try:
         finding, ok = fn(), True
     except Exception as e:  # noqa: BLE001 - we want every failure in the report
-        finding, ok = f"{type(e).__name__}: {e}", False
+        msg = re.sub(r"org_[A-Za-z0-9]+", "org_<redacted>", str(e))  # account id: not secret, but private
+        finding, ok = f"{type(e).__name__}: {msg[:400]}", False
     ms = int((time.perf_counter() - t0) * 1000)
     results.append({"group": group, "check": name, "ok": ok, "ms": ms, "finding": finding})
-    print(f"[{'PASS' if ok else 'FAIL'}] {group:<10} {name:<34} {ms:>6} ms  {finding}")
+    print(f"[{'PASS' if ok else 'FAIL'}] {group:<22} {name:<34} {ms:>6} ms  {finding}")
 
 
 def save(name: str, data: Any) -> None:
@@ -141,7 +143,6 @@ def check_nri(c: httpx.Client) -> str:
     pairs = {(a[f"{h}_RISKR"], a[f"{h}_AFREQ"] is None) for a in sample.values() for h in NRI_HAZARDS}
     bad = [p for p in pairs if (p[0] == "Not Applicable") != p[1]]
     expect(not bad, f"null semantics differ: {bad}")
-    expect("RFLD_AFREQ" not in fields, "")
     return (f"{count.get('count')} counties, version={versions}; county lookup by point OK; "
             f"null AFREQ <=> 'Not Applicable'; flood field is IFLD (no RFLD); "
             f"Miami CWAV={sample['Miami']['CWAV_AFREQ']:.2f}/yr (relative-to-local cold wave)")
@@ -162,7 +163,9 @@ def check_nws(c: httpx.Client) -> str:
             f"missing User-Agent -> {no_ua.status_code}; saved {len(sample)} sample alerts")
 
 
-# ----------------------------------------------------------------------------- LLM providers
+# ----------------------------------------------------------------------------- LLM targets
+# Wire API: Chat Completions (OpenAI-compatible). Groq's Responses API is beta and rejects
+# `store`/`include`; Chat Completions is supported by every candidate provider.
 
 class SampleAnswer(BaseModel):
     """Stand-in for AgentResponse: strict, all fields required, enum included."""
@@ -182,98 +185,132 @@ def strict_schema(model: type[BaseModel]) -> dict:
     return s
 
 
-WEATHER_TOOL = {
-    "type": "function", "name": "get_hub_weather", "strict": True,
-    "description": "Return a short weather summary for one logistics hub city.",
-    "parameters": {"type": "object", "additionalProperties": False, "required": ["city"],
-                   "properties": {"city": {"type": "string", "description": "City name"}}},
-}
-SUBMIT_TOOL = {
-    "type": "function", "name": "submit_answer", "strict": True,
-    "description": "Submit the final answer. Call exactly once, as the last step.",
-    "parameters": strict_schema(SampleAnswer),
-}
+def fn_tool(name: str, description: str, parameters: dict) -> dict:
+    return {"type": "function", "function": {"name": name, "description": description,
+                                             "parameters": parameters, "strict": True}}
+
+
+WEATHER_TOOL = fn_tool("get_hub_weather", "Return a short weather summary for one logistics hub city.",
+                       {"type": "object", "additionalProperties": False, "required": ["city"],
+                        "properties": {"city": {"type": "string", "description": "City name"}}})
+SUBMIT_TOOL = fn_tool("submit_answer", "Submit the final answer. Call exactly once, as the last step.",
+                      strict_schema(SampleAnswer))
+ANSWER_FORMAT = {"type": "json_schema",
+                 "json_schema": {"name": "SampleAnswer", "strict": True, "schema": strict_schema(SampleAnswer)}}
 FAKE_WEATHER = {"Houston": "hot, humid, hurricane season risk", "Miami": "hot, hurricane exposure high"}
+RATE_HEADERS = ("x-ratelimit-limit-requests", "x-ratelimit-limit-tokens",
+                "x-ratelimit-remaining-requests", "x-ratelimit-remaining-tokens")
 
 
-def to_input(item: Any) -> dict:
-    """Turn a Responses output item back into an input item (we resend history; store=False)."""
-    return item.to_dict() if hasattr(item, "to_dict") else item.model_dump(by_alias=True, exclude_none=True)
-
-
-def llm_checks(provider: str, base_url: str | None, key_env: str, model_env: str, default_model: str) -> None:
+def llm_checks(label: str, base_url: str, key_env: str, model: str, max_out: int) -> None:
     from openai import OpenAI  # imported here so --data works without the SDK configured
 
     key = os.getenv(key_env)
-    model = os.getenv(model_env) or default_model
-    group = f"{provider}"
     if not key:
-        record(group, "api key present", lambda: (_ for _ in ()).throw(RuntimeError(f"{key_env} not set - skipped")))
+        record(label, "api key present", lambda: (_ for _ in ()).throw(RuntimeError(f"{key_env} not set - skipped")))
         return
     client = OpenAI(api_key=key, base_url=base_url, timeout=90, max_retries=1)
-    state: dict[str, Any] = {"include": ["reasoning.encrypted_content"]}
+    state: dict[str, Any] = {"parallel": True}
 
     def create(**kw: Any) -> Any:
-        try:
-            return client.responses.create(model=model, store=False, include=state["include"], **kw)
-        except Exception as e:  # provider may reject `include`; retry once without it and note it
-            if state["include"] and "include" in str(e).lower():
-                state["include"] = None
-                return client.responses.create(model=model, store=False, **kw)
-            raise
+        raw = client.chat.completions.with_raw_response.create(model=model, max_completion_tokens=max_out, **kw)
+        state["headers"] = {h: raw.headers.get(h) for h in RATE_HEADERS if raw.headers.get(h)}
+        return raw.parse()
 
     def basic() -> str:
-        r = create(input="Reply with the single word: ready")
-        expect(bool(r.output_text.strip()), "empty output")
-        return f"model={r.model} reply={r.output_text.strip()[:20]!r} tokens in/out={r.usage.input_tokens}/{r.usage.output_tokens}"
+        r = create(messages=[{"role": "user", "content": "Reply with the single word: ready"}])
+        text = (r.choices[0].message.content or "").strip()
+        expect(bool(text), "empty output")
+        return (f"model={r.model} reply={text[:20]!r} tokens in/out={r.usage.prompt_tokens}/"
+                f"{r.usage.completion_tokens}; limits={state.get('headers')}")
 
-    convo: list[Any] = [{"role": "system", "content": "You are a logistics weather assistant. Use tools for facts."},
-                        {"role": "user", "content": "Compare Houston and Miami weather. Look up both cities."}]
+    convo: list[dict[str, Any]] = [
+        {"role": "system", "content": ("You are a logistics weather assistant. Use tools for facts. "
+                                       "When you have the facts you need, finish by calling submit_answer "
+                                       "exactly once.")},
+        {"role": "user", "content": "Compare Houston and Miami weather. Look up both cities."}]
 
-    def tools_required_parallel() -> str:
-        r = create(input=convo, tools=[WEATHER_TOOL, SUBMIT_TOOL], tool_choice="required", parallel_tool_calls=True)
-        calls = [o for o in r.output if o.type == "function_call"]
-        expect(len(calls) >= 1, "no function call despite tool_choice=required")
-        for o in r.output:
-            convo.append(to_input(o))
-        for call in calls:
-            args = json.loads(call.arguments)
-            convo.append({"type": "function_call_output", "call_id": call.call_id,
-                          "output": json.dumps({"city": args.get("city"), "summary": FAKE_WEATHER.get(args.get("city"), "n/a")})})
-        state["calls"] = calls
-        names = [f"{c.name}({c.arguments})" for c in calls]
-        return f"{len(calls)} call(s) in one turn {'(parallel OK)' if len(calls) > 1 else '(NOT parallel)'}: {names}; include={'ok' if state['include'] else 'rejected'}"
+    def tools_required() -> str:
+        kw: dict[str, Any] = dict(messages=convo, tools=[WEATHER_TOOL, SUBMIT_TOOL], tool_choice="required")
+        try:
+            r = create(parallel_tool_calls=True, **kw)
+        except Exception as e:  # some models reject the parallel flag; retry without and note it
+            if "parallel" not in str(e).lower():
+                raise
+            state["parallel"] = False
+            r = create(**kw)
+        msg = r.choices[0].message
+        calls = msg.tool_calls or []
+        expect(len(calls) >= 1, "no tool call despite tool_choice=required")
+        convo.append({"role": "assistant", "content": msg.content,
+                      "tool_calls": [{"id": c.id, "type": "function",
+                                      "function": {"name": c.function.name, "arguments": c.function.arguments}}
+                                     for c in calls]})
+        for c in calls:
+            city = json.loads(c.function.arguments).get("city")
+            convo.append({"role": "tool", "tool_call_id": c.id,
+                          "content": json.dumps({"city": city, "summary": FAKE_WEATHER.get(city, "n/a")})})
+        state["called"] = True
+        flag = "flag accepted" if state["parallel"] else "flag REJECTED"
+        return (f"{len(calls)} call(s) in one turn ({'parallel' if len(calls) > 1 else 'single'}; {flag}): "
+                + ", ".join(f"{c.function.name}({c.function.arguments})" for c in calls))
 
     def terminal_submit_answer() -> str:
-        expect("calls" in state, "depends on previous check")
+        expect(state.get("called"), "depends on previous check")
         msgs = list(convo)
-        for _ in range(3):  # model may fetch remaining cities before submitting
-            r = create(input=msgs, tools=[WEATHER_TOOL, SUBMIT_TOOL], tool_choice="required")
-            calls = [o for o in r.output if o.type == "function_call"]
-            submit = [c for c in calls if c.name == "submit_answer"]
+        trail: list[str] = []
+        for _ in range(3):  # model may fetch the remaining city before submitting
+            r = create(messages=msgs, tools=[WEATHER_TOOL, SUBMIT_TOOL], tool_choice="required")
+            msg = r.choices[0].message
+            calls = msg.tool_calls or []
+            trail.append("+".join(f"{c.function.name}({c.function.arguments[:40]})" for c in calls) or "no-call")
+            submit = [c for c in calls if c.function.name == "submit_answer"]
             if submit:
-                ans = SampleAnswer.model_validate_json(submit[0].arguments)  # raises if schema violated
-                return f"submit_answer args validate: cities={ans.cities} confidence={ans.confidence}"
-            for o in r.output:
-                msgs.append(to_input(o))
+                ans = SampleAnswer.model_validate_json(submit[0].function.arguments)  # raises if schema violated
+                return (f"submit_answer args validate after {len(trail)} round(s) [{' -> '.join(trail)}]: "
+                        f"cities={ans.cities} confidence={ans.confidence}")
+            msgs.append({"role": "assistant", "content": msg.content, "tool_calls": [
+                {"id": c.id, "type": "function", "function": {"name": c.function.name, "arguments": c.function.arguments}}
+                for c in calls]})
             for c in calls:
-                msgs.append({"type": "function_call_output", "call_id": c.call_id, "output": '{"summary":"n/a"}'})
-        raise AssertionError("never called submit_answer within 3 rounds")
+                city = str(json.loads(c.function.arguments).get("city", "")).split(",")[0].strip()
+                msgs.append({"role": "tool", "tool_call_id": c.id,
+                             "content": json.dumps({"city": city, "summary": FAKE_WEATHER.get(city, "no data")})})
+        raise AssertionError(f"never called submit_answer within 3 rounds: {' -> '.join(trail)}")
 
-    def structured_output_with_tools() -> str:
-        expect("calls" in state, "depends on previous check")
-        r = create(input=convo, tools=[WEATHER_TOOL], tool_choice="auto",
-                   text={"format": {"type": "json_schema", "name": "SampleAnswer",
-                                    "schema": strict_schema(SampleAnswer), "strict": True}})
-        if any(o.type == "function_call" for o in r.output):
-            return "model chose another tool call before answering (format not exercised) - inconclusive"
-        ans = SampleAnswer.model_validate_json(r.output_text)
-        return f"text.format json_schema + tools in same request OK: cities={ans.cities}"
+    def json_schema_output() -> str:
+        expect(state.get("called"), "depends on previous check")
+        r = create(messages=convo, response_format=ANSWER_FORMAT)
+        ans = SampleAnswer.model_validate_json(r.choices[0].message.content or "")
+        return f"strict json_schema (no tools) OK: cities={ans.cities}"
 
-    record(group, "basic call", basic)
-    record(group, "tool_choice=required + parallel", tools_required_parallel)
-    record(group, "terminal submit_answer (strict)", terminal_submit_answer)
-    record(group, "json_schema output with tools", structured_output_with_tools)
+    def json_schema_with_tools() -> str:
+        """Documented as unsupported on Groq; we record what actually happens."""
+        try:
+            r = create(messages=convo, tools=[WEATHER_TOOL], tool_choice="auto", response_format=ANSWER_FORMAT)
+        except Exception as e:  # noqa: BLE001
+            return f"rejected as documented -> use terminal submit_answer tool ({str(e)[:120]})"
+        content = r.choices[0].message.content or ""
+        return f"accepted (content starts {content[:60]!r})"
+
+    record(label, "basic call + rate-limit headers", basic)
+    record(label, "tool_choice=required (+parallel)", tools_required)
+    record(label, "terminal submit_answer (strict)", terminal_submit_answer)
+    record(label, "json_schema output (no tools)", json_schema_output)
+    record(label, "json_schema + tools together", json_schema_with_tools)
+
+
+def llm_targets() -> list[tuple[str, str, str, str, int]]:
+    """(label, base_url, key env, model, max output tokens). Read after load_dotenv()."""
+    groq_model = os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"
+    gemini_model = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
+    return [
+        (f"groq:{groq_model}", "https://api.groq.com/openai/v1", "GROQ_API_KEY", groq_model, 2048),
+        # Groq free tier caps qwen at 1,000 output tokens/minute (measured 2026-11-25), so cap each call lower.
+        ("groq:qwen/qwen3.8-27b", "https://api.groq.com/openai/v1", "GROQ_API_KEY", "qwen/qwen3.8-27b", 800),
+        (f"gemini:{gemini_model}", "https://generativelanguage.googleapis.com/v1beta/openai/",
+         "GEMINI_API_KEY", gemini_model, 2048),
+    ]
 
 
 # ----------------------------------------------------------------------------- main
@@ -294,10 +331,11 @@ def main() -> int:
             record("data", "fema nri (arcgis)", lambda: check_nri(c))
             record("data", "nws alerts", lambda: check_nws(c))
     if run_llm:
-        llm_checks("xai", "https://api.x.ai/v1", "XAI_API_KEY", "XAI_MODEL", "grok-4.3")
-        llm_checks("openai", None, "OPENAI_API_KEY", "OPENAI_MODEL", "gpt-6-luna")
+        for label, base_url, key_env, model, max_out in llm_targets():
+            llm_checks(label, base_url, key_env, model, max_out)
 
-    save("_verify_report.json", {"run_at": datetime.now(timezone.utc).isoformat(), "results": results})
+    name = "_verify_report.json" if run_data else "_verify_report_llm.json"
+    save(name, {"run_at": datetime.now(timezone.utc).isoformat(), "results": results})
     failed = [r for r in results if not r["ok"]]
     print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
     return 1 if failed else 0

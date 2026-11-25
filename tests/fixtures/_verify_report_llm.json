@@ -1,0 +1,82 @@
+{
+ "run_at": "2026-11-25T09:35:19.279927+00:00",
+ "results": [
+  {
+   "group": "groq:openai/gpt-oss-120b",
+   "check": "basic call + rate-limit headers",
+   "ok": true,
+   "ms": 606,
+   "finding": "model=openai/gpt-oss-120b reply='ready' tokens in/out=78/36; limits={'x-ratelimit-limit-requests': '1000', 'x-ratelimit-limit-tokens': '8000', 'x-ratelimit-remaining-requests': '987', 'x-ratelimit-remaining-tokens': '7779'}"
+  },
+  {
+   "group": "groq:openai/gpt-oss-120b",
+   "check": "tool_choice=required (+parallel)",
+   "ok": true,
+   "ms": 523,
+   "finding": "1 call(s) in one turn (single; flag accepted): get_hub_weather({\"city\":\"Houston\"})"
+  },
+  {
+   "group": "groq:openai/gpt-oss-120b",
+   "check": "terminal submit_answer (strict)",
+   "ok": true,
+   "ms": 1043,
+   "finding": "submit_answer args validate after 2 round(s) [get_hub_weather({\"city\":\"Miami\"}) -> submit_answer({\"cities\":[\"Houston\",\"Miami\"],\"confidenc)]: cities=['Houston', 'Miami'] confidence=high"
+  },
+  {
+   "group": "groq:openai/gpt-oss-120b",
+   "check": "json_schema output (no tools)",
+   "ok": false,
+   "ms": 480,
+   "finding": "BadRequestError: Error code: 400 - Tool choice is none, but model called a tool"
+  },
+  {
+   "group": "groq:openai/gpt-oss-120b",
+   "check": "json_schema + tools together",
+   "ok": true,
+   "ms": 88,
+   "finding": "rejected as documented -> use terminal submit_answer tool (Error code: 400 - json mode cannot be combined with tool/function calling)"
+  },
+  {
+   "group": "groq:qwen/qwen3.8-27b",
+   "check": "basic call + rate-limit headers",
+   "ok": true,
+   "ms": 442,
+   "finding": "model=qwen/qwen3.8-27b reply='ready' tokens in/out=19/2; limits={'x-ratelimit-limit-requests': '1000', 'x-ratelimit-limit-tokens': '8000', 'x-ratelimit-remaining-requests': '995', 'x-ratelimit-remaining-tokens': '7181'}"
+  },
+  {
+   "group": "groq:qwen/qwen3.8-27b",
+   "check": "tool_choice=required (+parallel)",
+   "ok": true,
+   "ms": 277,
+   "finding": "2 call(s) in one turn (parallel; flag accepted): get_hub_weather({\"city\":\"Houston\"}), get_hub_weather({\"city\":\"Miami\"})"
+  },
+  {
+   "group": "groq:qwen/qwen3.8-27b",
+   "check": "terminal submit_answer (strict)",
+   "ok": true,
+   "ms": 996,
+   "finding": "submit_answer args validate after 1 round(s) [submit_answer({\"cities\":[\"Houston\",\"Miami\"],\"confidenc)]: cities=['Houston', 'Miami'] confidence=high"
+  },
+  {
+   "group": "groq:qwen/qwen3.8-27b",
+   "check": "json_schema output (no tools)",
+   "ok": true,
+   "ms": 881,
+   "finding": "strict json_schema (no tools) OK: cities=['Houston', 'Miami']"
+  },
+  {
+   "group": "groq:qwen/qwen3.8-27b",
+   "check": "json_schema + tools together",
+   "ok": true,
+   "ms": 86,
+   "finding": "rejected as documented -> use terminal submit_answer tool (Error code: 400 - json mode cannot be combined with tool/function calling)"
+  },
+  {
+   "group": "gemini:gemini-3.6-flash",
+   "check": "api key present",
+   "ok": false,
+   "ms": 0,
+   "finding": "RuntimeError: GEMINI_API_KEY not set - skipped"
+  }
+ ]
+}
