@@ -1,0 +1,78 @@
+# 20 illustrative distribution hubs (synthetic; see PLAN.md §1.4).
+# lat/lon = metro center (not a real facility). Region = US Census Bureau region.
+# station = main-airport NOAA GHCN-Daily station (verified 2026-11-25: 2016-2025 coverage
+# 100% for PRCP/TMAX/TMIN; SNOW 100% except MIA 20%, PHX 21%, LAX 1% -> grid-model fallback).
+# aliases: alternate names, airport names and IATA codes, matched before any geocoding.
+
+hubs:
+  # --- Midwest -------------------------------------------------------------
+  - {id: CHI, name: Chicago, state: IL, region: midwest, lat: 41.8781, lon: -87.6298,
+     station: USW00094846, station_name: "Chicago O'Hare Intl Airport",
+     aliases: [chicago, chi-town, ord, "o'hare", ohare, midway, mdw]}
+  - {id: IND, name: Indianapolis, state: IN, region: midwest, lat: 39.7684, lon: -86.1581,
+     station: USW00093819, station_name: "Indianapolis Intl Airport",
+     aliases: [indianapolis, indy, ind]}
+  - {id: CMH, name: Columbus, state: OH, region: midwest, lat: 39.9612, lon: -82.9988,
+     station: USW00014821, station_name: "John Glenn Columbus Intl Airport",
+     aliases: [columbus, "columbus oh", "columbus ohio", cmh, "john glenn"]}
+  - {id: DET, name: Detroit, state: MI, region: midwest, lat: 42.3314, lon: -83.0458,
+     station: USW00094847, station_name: "Detroit Metro Airport",
+     aliases: [detroit, dtw, "detroit metro"]}
+  - {id: MSP, name: Minneapolis, state: MN, region: midwest, lat: 44.9778, lon: -93.2650,
+     station: USW00014922, station_name: "Minneapolis-St. Paul Intl Airport",
+     aliases: [minneapolis, "st paul", "saint paul", "twin cities", msp]}
+  - {id: MKC, name: Kansas City, state: MO, region: midwest, lat: 39.0997, lon: -94.5786,
+     station: USW00003947, station_name: "Kansas City Intl Airport",
+     aliases: [kansas city, kc, kcmo, mci]}
+  # --- South ---------------------------------------------------------------
+  - {id: DAL, name: Dallas, state: TX, region: south, lat: 32.7767, lon: -96.7970,
+     station: USW00003927, station_name: "Dallas/Fort Worth Intl Airport",
+     aliases: [dallas, dfw, "dallas fort worth", "dallas-fort worth", "love field", dal]}
+  - {id: HOU, name: Houston, state: TX, region: south, lat: 29.7604, lon: -95.3698,
+     station: USW00012960, station_name: "Houston Intercontinental Airport",
+     aliases: [houston, iah, hou, hobby, "bush intercontinental"]}
+  - {id: MIA, name: Miami, state: FL, region: south, lat: 25.7617, lon: -80.1918,
+     station: USW00012839, station_name: "Miami Intl Airport",
+     aliases: [miami, mia, "miami-dade"]}
+  - {id: ATL, name: Atlanta, state: GA, region: south, lat: 33.7490, lon: -84.3880,
+     station: USW00013874, station_name: "Atlanta Hartsfield-Jackson Intl Airport",
+     aliases: [atlanta, atl, hartsfield, "hartsfield-jackson"]}
+  - {id: MEM, name: Memphis, state: TN, region: south, lat: 35.1495, lon: -90.0490,
+     station: USW00013893, station_name: "Memphis Intl Airport",
+     aliases: [memphis, mem]}
+  - {id: CLT, name: Charlotte, state: NC, region: south, lat: 35.2271, lon: -80.8431,
+     station: USW00013881, station_name: "Charlotte Douglas Airport",
+     aliases: [charlotte, clt, "charlotte douglas"]}
+  - {id: SDF, name: Louisville, state: KY, region: south, lat: 38.2527, lon: -85.7585,
+     station: USW00093821, station_name: "Louisville Intl Airport",
+     aliases: [louisville, sdf]}
+  # --- Northeast -----------------------------------------------------------
+  - {id: EWR, name: Newark, state: NJ, region: northeast, lat: 40.7357, lon: -74.1724,
+     station: USW00014734, station_name: "Newark Liberty Intl Airport",
+     aliases: [newark, ewr, "newark liberty"]}
+  - {id: BOS, name: Boston, state: MA, region: northeast, lat: 42.3601, lon: -71.0589,
+     station: USW00014739, station_name: "Boston Logan Intl Airport",
+     aliases: [boston, bos, logan]}
+  # --- West ----------------------------------------------------------------
+  - {id: DEN, name: Denver, state: CO, region: west, lat: 39.7392, lon: -104.9903,
+     station: USW00003017, station_name: "Denver Intl Airport",
+     aliases: [denver, den, "mile high city"]}
+  - {id: PHX, name: Phoenix, state: AZ, region: west, lat: 33.4484, lon: -112.0740,
+     station: USW00023183, station_name: "Phoenix Sky Harbor Airport",
+     aliases: [phoenix, phx, "sky harbor"]}
+  - {id: LAX, name: Los Angeles, state: CA, region: west, lat: 34.0522, lon: -118.2437,
+     station: USW00023174, station_name: "Los Angeles Intl Airport",
+     aliases: [los angeles, "l.a.", lax]}   # not "la": that is also Louisiana's postal code
+  - {id: SEA, name: Seattle, state: WA, region: west, lat: 47.6062, lon: -122.3321,
+     station: USW00024233, station_name: "Seattle-Tacoma Airport",
+     aliases: [seattle, sea, sea-tac, seatac]}
+  - {id: PDX, name: Portland, state: OR, region: west, lat: 45.5152, lon: -122.6784,
+     station: USW00024229, station_name: "Portland Intl Airport",
+     aliases: [portland, "portland or", "portland oregon", pdx]}
+
+# US Census Bureau regions (used for "Midwest" etc.; deterministic, citable)
+regions:
+  northeast: [CT, ME, MA, NH, RI, VT, NJ, NY, PA]
+  midwest: [IL, IN, MI, OH, WI, IA, KS, MN, MO, NE, ND, SD]
+  south: [DE, DC, FL, GA, MD, NC, SC, VA, WV, AL, KY, MS, TN, AR, LA, OK, TX]
+  west: [AZ, CO, ID, MT, NV, NM, UT, WY, AK, CA, HI, OR, WA]
