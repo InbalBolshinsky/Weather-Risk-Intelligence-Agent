@@ -28,7 +28,7 @@ TOOLS = TOOL_SPECS + [SUBMIT_ANSWER_SPEC]
 MAX_ROUNDS = 8
 _LEVELS = {"high": 2, "medium": 1, "low": 0}
 _NUM = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
-_CONF = re.compile(r"confidence\s*[:\-]\s*(high|medium|low)\b", re.IGNORECASE)
+_CONF = re.compile(r"confidence\**\s*[:\-–—]\s*\**\s*(high|medium|low)\b", re.IGNORECASE)   # tolerates **bold**
 
 
 def _norm_num(s: str) -> str:

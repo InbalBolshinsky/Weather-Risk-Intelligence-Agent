@@ -176,6 +176,11 @@ def test_verified_numbers_from_earlier_answers_still_count(agent_factory):
     assert not agent.chat("Was it 32?", sid).unverified
 
 
+def test_confidence_line_is_recognized_in_common_formats():
+    for line in ["Confidence: low - x", "**Confidence:** low — x", "Confidence – low: x", "confidence - LOW"]:
+        assert stated_confidence(line) == "low", line
+
+
 def test_grounding_has_no_small_number_exemption():   # D44
     assert ungrounded_numbers("ranked 3rd of 7", ["rank 3 of 20"]) == ["7"]
 
