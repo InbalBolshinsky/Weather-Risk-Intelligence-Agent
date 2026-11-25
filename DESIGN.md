@@ -116,7 +116,8 @@ out of scope unless a same-name US city ≥ 50K exists (Birmingham → AL); land
 question); **grounding** (every number must appear in a tool result, the conversation or the prompt); the
 **confidence line** must state the code's level (lowest of the turn) and, if not high, the conflicting facts. One
 repair retry; then code appends an "unverified numbers" note or writes the confidence line itself. Max 8 rounds.
-When all models are rate-limited: wait once (≤ 30 s), or tell the user the real wait.
+When all models are rate-limited: wait once (≤ 30 s), or tell the user the real wait; when every model sent malformed
+tool calls: ask the user to retry or rephrase.
 
 ## 7. Scoring (`config/scoring.yaml`)
 
@@ -154,13 +155,17 @@ graded in code with facts computed live from the engine, plus pairing checks (hu
 valid result of the runs on the shipping chain on 2026-11-25: run 1 (log only, its answers weren't saved) for 23
 cases, run 14:42 UTC for 6, run 19:39 for 8, run 19:49 for 1. Single-model runs (15:03, 15:11, 19:05) are kept as
 comparisons, not counted. Failures: C11 and E8 (gpt-oss-20b skipped a rule), E4 (qwen called inland hubs "Gulf
-Coast"), D7 (passed the checks but stated a wrong limit; failed on review). Later code changes (D75, D77, D78) were
-verified with deterministic checks only; after D75, case D3 passed once on each model.
+Coast"), D7 (passed the checks but stated a wrong limit; failed on review). Later code changes (D75, D77, D78, D80)
+were verified with deterministic checks only. For the D75 prompt change, case D3 passed once on each model; case A4
+is unverified (not run on qwen3.8-27b; both gpt-oss-20b attempts ended in malformed tool calls, see §10).
 
 ## 10. Known limitations
 
 - **Free-tier LLMs:** qwen3.8-27b is a Groq preview model; the backup gpt-oss-20b follows rules less well. Groq
   allows 200K tokens/day per model, about 6–8K tokens per answer in the evals.
+- **gpt-oss-20b sometimes omits the required `interpreted_from` field** in place arguments; Groq's strict schema then
+  rejects the call (HTTP 400). Making the field optional would change what the model sees and needs an eval run, so
+  it was deliberately not done before submission. Usually qwen answers first; if not, the user is asked to retry.
 - **Grounding is lexical:** a number must exist in the data, but the check can't tell whether it's attached to the
   right hub; claims without numbers aren't checked. Numbers in the user's own message count as grounded.
 - **Unvalidated scores:** no real closure data, so thresholds and weights are documented judgment calls. FEMA data
