@@ -1,0 +1,24 @@
+# LLM fallback chain (PLAN.md §2.6, D13, D21). Tried in order; an entry whose API key isn't set is skipped.
+# Keys come from the environment only. Fallback happens on availability errors (429 after a short wait,
+# 5xx, timeouts) and after a repeated malformed tool call; never on answer-validation failures.
+# The ORDER is provisional until the model comparison is re-run on the final prompt.
+timeout_s: 60
+chain:
+  - name: groq-gpt-oss-120b
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    model: openai/gpt-oss-120b
+    model_env: GROQ_MODEL            # .env may override the model
+    max_output_tokens: 2048
+  - name: groq-qwen3.8-27b
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    model: qwen/qwen3.8-27b
+    max_output_tokens: 800           # Groq free tier: 1,000 output tokens/minute for this model
+  - name: gemini
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    key_env: GOOGLE_API_KEY
+    model: gemini-3.6-flash
+    model_env: GEMINI_MODEL
+    max_output_tokens: 4096
+    enabled: false                   # empty-body 400s in the comparison; re-enable after investigating

@@ -27,7 +27,37 @@ CREATE TABLE IF NOT EXISTS nri_counties (
     attrs       TEXT NOT NULL,     -- JSON: {HAZ_AFREQ: float|null, HAZ_RISKR: str, ...}
     loaded_at   TEXT NOT NULL
 );
+
+-- Daily counters for budget caps (e.g. live non-hub profiles cost ~157 Open-Meteo calls each).
+CREATE TABLE IF NOT EXISTS usage_counters (
+    day    TEXT NOT NULL,
+    key    TEXT NOT NULL,
+    count  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, key)
+);
+
+-- Conversation turns (D27 history policy needs both the full and the compact form).
+CREATE TABLE IF NOT EXISTS turns (
+    session_id   TEXT NOT NULL,
+    seq          INTEGER NOT NULL,
+    user_message TEXT NOT NULL,
+    full_json    TEXT NOT NULL,    -- every message of the turn (assistant tool calls + tool results)
+    answer_json  TEXT NOT NULL,    -- the final validated answer
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (session_id, seq)
+);
 """
+
+
+def bump_counter(conn: sqlite3.Connection, day: str, key: str, limit: int) -> bool:
+    """Increment a daily counter if it's below `limit`. Returns False (no increment) at the limit."""
+    row = conn.execute("SELECT count FROM usage_counters WHERE day=? AND key=?", (day, key)).fetchone()
+    if row and row["count"] >= limit:
+        return False
+    conn.execute("INSERT INTO usage_counters(day, key, count) VALUES (?,?,1) "
+                 "ON CONFLICT(day, key) DO UPDATE SET count = count + 1", (day, key))
+    conn.commit()
+    return True
 
 
 def connect(path: Path | None = None) -> sqlite3.Connection:

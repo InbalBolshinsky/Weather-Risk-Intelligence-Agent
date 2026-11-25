@@ -550,7 +550,7 @@ Overall = the lowest confidence among hazards contributing ≥ 20% of the WDRI.
 `confidence_reasons[]`, `assumptions[]`, `data_window`, `sources[{name, url, retrieved_at}]`,
 `config_version`, `data_version`.
 
-### 4.7 Step 3 results on real data (2026-11-25, config `403917d3`)
+### 4.7 Step 3 results on real data (2026-11-25, config `05f5b6d1`)
 
 - **Overall WDRI:** HOU 53, BOS 51, MIA 50, EWR 44, CHI 43, DAL 42 (weight-sensitive), MKC 40 … PDX 14.
   Top tie group: HOU, BOS, MIA (within 5 points).
@@ -698,9 +698,9 @@ All five data APIs pass; fixtures saved in `tests/fixtures/`. LLM checks are wri
 | D18 | 2026-11-25 | Drop NRI cold wave (`CWAV`) from the winter score; it's relative to local norms (Miami 1.28/yr > Houston 0.48) | Accepted (user) |
 | D19 | 2026-11-25 | Factual hub weather questions use the hub's airport station (GHCN-Daily) as primary, with the grid model alongside; scoring stays on the grid model for consistency | Accepted (user) |
 | D20 | 2026-11-25 | Timeline flexible; no pre-emptive cuts; priority order unchanged | Accepted (user) |
-| D32 | 2026-11-25 | Multi-part NRI hazards summed before normalizing (flood = inland + coastal); NRI frequency 0 → score 0 | Accepted (Claude, step-3 evidence; open to review) |
-| D31 | 2026-11-25 | Cross-source confidence check is rank-based (≥ 10 places apart among hubs); severe storms excluded (weak gust proxy) | Accepted (Claude, step-3 evidence; open to review) |
-| D30 | 2026-11-25 | NRI KPIs normalized linearly to the national p95 county (refines D4's pure percentiles, which inflated tiny frequencies) | Accepted (Claude, step-3 evidence; open to review) |
+| D32 | 2026-11-25 | Multi-part NRI hazards summed before normalizing (flood = inland + coastal); NRI frequency 0 → score 0 | Accepted (user) |
+| D31 | 2026-11-25 | Cross-source confidence check is rank-based (≥ 10 places apart among hubs); severe storms excluded (weak gust proxy) | Accepted (user) |
+| D30 | 2026-11-25 | NRI KPIs normalized linearly to the national p95 county (refines D4's pure percentiles, which inflated tiny frequencies) | Accepted (user) |
 | D29 | 2026-11-25 | System prompt §6 + §8 details (numbers-first shape, ≤ ~150 words, malformed-tool-call retry, field guidance) | Accepted (Claude, not objected) |
 | D28 | 2026-11-25 | Confidence level is set by code (lowest among cited tool results); the model writes only the reason | Accepted (user) |
 | D27 | 2026-11-25 | History: latest turn in full; older turns = question + submitted answer only | Accepted (user) |

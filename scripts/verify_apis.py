@@ -205,7 +205,7 @@ RATE_HEADERS = ("x-ratelimit-limit-requests", "x-ratelimit-limit-tokens",
 def llm_checks(label: str, base_url: str, key_env: str, model: str, max_out: int) -> None:
     from openai import OpenAI  # imported here so --data works without the SDK configured
 
-    key = os.getenv(key_env)
+    key = os.getenv(key_env) or (os.getenv("GOOGLE_API_KEY") if key_env == "GEMINI_API_KEY" else None)
     if not key:
         record(label, "api key present", lambda: (_ for _ in ()).throw(RuntimeError(f"{key_env} not set - skipped")))
         return
