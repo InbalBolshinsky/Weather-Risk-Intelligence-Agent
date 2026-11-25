@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Risk Agent</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#667085; --line:#e3e6eb; --accent:#1f5eff;
+          --user:#e8efff; --warn-bg:#fff4e5; --warn:#8a4b00; --err-bg:#fdecec; --err:#a11; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161b; --card:#1d2027; --text:#e7e9ee; --muted:#9aa3b2; --line:#2c3039; --accent:#7aa2ff;
+            --user:#24304d; --warn-bg:#3a2c14; --warn:#ffcf8a; --err-bg:#3d1f1f; --err:#ffb3b3; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  .wrap { max-width:760px; margin:0 auto; padding:16px; min-height:100vh; display:flex; flex-direction:column; gap:12px; }
+  header { display:flex; align-items:baseline; justify-content:space-between; gap:8px; flex-wrap:wrap; }
+  h1 { font-size:18px; margin:0; }
+  .meta { color:var(--muted); font-size:13px; }
+  #log { flex:1; display:flex; flex-direction:column; gap:10px; }
+  .msg { padding:10px 14px; border-radius:12px; max-width:92%; overflow-wrap:anywhere; }
+  .user { align-self:flex-end; background:var(--user); }
+  .bot { align-self:flex-start; background:var(--card); border:1px solid var(--line); }
+  .bot p { margin:0 0 8px; } .bot p:last-child { margin-bottom:0; } .bot ul { margin:4px 0 8px; padding-left:20px; }
+  .waiting { color:var(--muted); font-style:italic; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .chip { border:1px solid var(--line); background:transparent; color:var(--accent); border-radius:999px;
+          padding:4px 10px; font-size:13px; cursor:pointer; }
+  .banner { padding:10px 14px; border-radius:10px; background:var(--warn-bg); color:var(--warn); }
+  .banner.err { background:var(--err-bg); color:var(--err); }
+  form { display:flex; gap:8px; position:sticky; bottom:0; background:var(--bg); padding:8px 0; }
+  input[type=text], input[type=password] { flex:1; min-width:0; padding:10px 12px; border:1px solid var(--line);
+          border-radius:10px; background:var(--card); color:var(--text); font:inherit; }
+  button.primary, button.ghost { padding:10px 14px; border-radius:10px; font:inherit; cursor:pointer; }
+  button.primary { border:0; background:var(--accent); color:#fff; }
+  button.ghost { border:1px solid var(--line); background:transparent; color:var(--text); }
+  button:disabled { opacity:.5; cursor:default; }
+  .hint { color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Weather Risk Agent</h1>
+    <span class="meta"><span id="left"></span> · <button class="chip" id="newchat" type="button">New chat</button></span>
+  </header>
+  <div id="codebox" class="banner" hidden>
+    This demo needs an access code (sent with the submission).
+    <form id="codeform"><input id="code" type="password" placeholder="Access code" autocomplete="off">
+      <button class="primary">Save</button></form>
+  </div>
+  <div id="log">
+    <div class="msg bot">Ask about weather-disruption risk for our 20 US hubs, for example:
+      <div class="chips" id="examples"></div></div>
+  </div>
+  <form id="ask">
+    <input id="q" type="text" maxlength="1000" placeholder="Ask about hub weather risk…" autocomplete="off">
+    <button class="primary" id="send">Send</button>
+  </form>
+  <div class="hint">Scores come from a deterministic engine; the AI explains them. Engine view: <a href="/api/rankings">/api/rankings</a> · API: <a href="/docs">/docs</a></div>
+</div>
+<script>
+const EXAMPLES = ["Which hubs in the Midwest are most exposed to winter disruption?",
+  "Compare Miami and Houston in terms of hurricane and flood exposure.",
+  "What percentage of days in Denver last year had snowfall?",
+  "Why is the Dallas hub's weather disruption risk high?"];
+const $ = (id) => document.getElementById(id);
+let sessionId = null, busy = false, stopped = false;
+
+// Access code (D59): taken once from ?code=..., stored locally, removed from the address bar.
+function store(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
+function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+const url = new URL(location.href);
+if (url.searchParams.get("code")) { store("access_code", url.searchParams.get("code"));
+  url.searchParams.delete("code"); history.replaceState(null, "", url.pathname + url.search); }
+
+function esc(s) { return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function md(text) {   // minimal, safe markdown: escape first, then **bold**, bullet lists, paragraphs
+  const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\*(.+?)\*/g, "<em>$1</em>");
+  return text.trim().split(/\n{2,}/).map(block => {
+    const lines = block.split("\n");
+    if (lines.every(l => /^\s*[-*•]\s+/.test(l)))
+      return "<ul>" + lines.map(l => "<li>" + inline(l.replace(/^\s*[-*•]\s+/, "")) + "</li>").join("") + "</ul>";
+    return "<p>" + lines.map(inline).join("<br>") + "</p>";
+  }).join("");
+}
+function add(cls, html) { const d = document.createElement("div"); d.className = "msg " + cls; d.innerHTML = html;
+  $("log").appendChild(d); d.scrollIntoView({block: "end"}); return d; }
+function chips(parent, items) { if (!items || !items.length) return; const c = document.createElement("div"); c.className = "chips";
+  items.forEach(t => { const b = document.createElement("button"); b.className = "chip"; b.type = "button"; b.textContent = t;
+    b.onclick = () => ask(t); c.appendChild(b); }); parent.appendChild(c); }
+function banner(text, err) { const d = document.createElement("div"); d.className = "banner" + (err ? " err" : "");
+  d.textContent = text; $("log").appendChild(d); d.scrollIntoView({block: "end"}); }
+function setLeft(n) { if (typeof n === "number") $("left").textContent = n + " questions left today"; }
+function lock(on) { busy = on; $("send").disabled = on || stopped; $("q").disabled = stopped; }
+
+async function ask(text) {
+  text = (text || "").trim(); if (!text || busy || stopped) return;
+  $("q").value = ""; add("user", esc(text)); lock(true);
+  const wait = add("bot waiting", "Thinking…");
+  const t1 = setTimeout(() => wait.textContent = "Waiting for model capacity (free tier)… this can take up to ~30 s.", 8000);
+  try {
+    const r = await fetch("/api/chat", { method: "POST",
+      headers: {"Content-Type": "application/json", "X-Access-Code": load("access_code") || ""},
+      body: JSON.stringify({message: text, session_id: sessionId}) });
+    const data = await r.json().catch(() => ({}));
+    wait.remove();
+    if (!r.ok) {
+      const d = data.detail || {};
+      if (d.error === "access_code") { $("codebox").hidden = false; banner(d.message, true); }
+      else if (d.error === "daily_limit") { stopped = true; setLeft(0); banner(d.message); }
+      else if (d.error === "conversation_limit") { banner(d.message); }
+      else banner("Something went wrong (" + r.status + "). Please try again.", true);
+      return;
+    }
+    sessionId = data.session_id; setLeft(data.questions_left_today);
+    const el = add("bot", md(data.answer || ""));
+    chips(el, data.response_type === "clarification" ? data.clarification_options : data.suggested_followups);
+  } catch (e) { wait.remove(); banner("Network error. Please try again.", true); }
+  finally { clearTimeout(t1); lock(false); $("q").focus(); }
+}
+
+$("ask").onsubmit = (e) => { e.preventDefault(); ask($("q").value); };
+$("codeform").onsubmit = (e) => { e.preventDefault(); store("access_code", $("code").value.trim());
+  $("codebox").hidden = true; banner("Access code saved."); };
+$("newchat").onclick = () => { if (busy) return; sessionId = null; stopped = false;
+  [...$("log").children].slice(1).forEach(n => n.remove()); lock(false); $("q").focus(); };
+chips($("examples").parentElement, EXAMPLES); $("examples").remove();
+
+fetch("/api/status").then(r => r.json()).then(s => {
+  setLeft(s.questions_left_today);
+  if (s.access_code_required && !load("access_code")) $("codebox").hidden = false;
+  if (s.questions_left_today === 0) { stopped = true; lock(false);
+    banner("Today's demo limit is reached (free-tier quotas). It resets at 00:00 UTC. To run without limits, see the README."); }
+}).catch(() => {});
+</script>
+</body>
+</html>

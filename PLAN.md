@@ -2,8 +2,8 @@
 
 Living plan; decisions are recorded in the **Decision log** (D1…). Working mode and rules: `CLAUDE.md`.
 
-**Status (2026-11-25):** steps 0–4 done (chain qwen3.8-27b → gpt-oss-20b, D56). Next: step 5 (API + chat
-page; includes one SQLite connection per request). Known limitations: README.
+**Status (2026-11-25):** steps 0–5 done (chain qwen3.8-27b → gpt-oss-20b, D56; API + chat page, D59–D63).
+Next: step 6 (eval set). Known limitations: README.
 
 **Guiding principle:** the best agent for this assignment, judged by clarity, control, reliability, and
 simplicity to run. Free-tier services only (D53).
@@ -30,7 +30,7 @@ questions. It never computes a number: every number in an answer is checked agai
 | 2 | Data clients, SQLite cache, refresh script (`app/data`, `app/store`, `config/hubs.yaml`) | ✅ |
 | 3 | Scoring engine + config + tests (`app/scoring`, `config/scoring.yaml`), reviewed (D33–D37) | ✅ |
 | 4 | Agent: resolver, tools, prompt, loop, validation, provider chain (`app/agent`, `app/geo`, `app/llm`) | ✅ (chain order open) |
-| 5 | FastAPI + single-page chat UI | next |
+| 5 | FastAPI + single-page chat UI (`app/main.py`, `web/index.html`) | ✅ |
 | 6 | Eval set (~25–30 questions) + runner | |
 | 7 | Deploy to a URL | |
 | 8 | README, ARCHITECTURE.md, export AI session | |
@@ -117,10 +117,18 @@ evals/       results/ (git-ignored); eval set in step 6
 web/, app/main.py, Dockerfile, README.md, docs/ARCHITECTURE.md, session/   [steps 5–8]
 ```
 
-### 2.4 API (step 5, decision pending)
+### 2.4 API (D63)
 
-`POST /api/chat` ({message, session_id?} → {session_id, answer, debug}) and `GET /api/health`; optionally one
-LLM-free `GET /api/rankings` to show scores come from code. The UI shows only the answer text (D41).
+| Endpoint | Access | Purpose |
+|---|---|---|
+| `GET /` | open | Chat page (D62) |
+| `POST /api/chat` | access code if `DEMO_TOKEN` set (D59) | {message, session_id?} → {session_id, answer, clarification/follow-up options, questions_left_today, debug}; caps: 30/conversation (D60), ~80/day (D61) |
+| `GET /api/status` | open | Health, data/config versions, models, questions left |
+| `GET /api/rankings` | open | Engine ranking, no LLM |
+| `/docs` | open | FastAPI's interactive API page |
+
+One SQLite connection per worker thread; hub scores memoized once and shared (D58). Startup warms the scores
+only from a pre-warmed cache, never with live downloads. Measured end to end (Denver question): 4,889 tokens, 5.3 s.
 
 ---
 
@@ -346,4 +354,9 @@ and kept out of hub rankings (D10).
 | D55 | Costs/ROI stay out of scope; no extra ROI rule | Accepted (user) |
 | D56 | LLM chain = qwen3.8-27b → gpt-oss-20b (comparison: 14/16, 9/16); gpt-oss-120b and Gemini disabled | Accepted (user) |
 | D57 | Grounding fix: numbers an earlier answer shipped as unverified (and validator feedback) never count as sources later | Accepted (user) |
+| D59 | Deployed URL protected by an access code, delivered as a one-click link in the submission email (`/?code=…`; the page stores it and strips it from the address bar). The code lives only in the deploy environment (`DEMO_TOKEN`), never in the public repo or this session; local runs need no code | Accepted (user) |
+| D60 | Conversation cap: 30 questions, then "start a new chat" | Accepted (user) |
+| D61 | Daily cap ~80 questions (below Groq's daily quotas: ~25–40 qwen + ~50 gpt-oss-20b answers), resets 00:00 UTC; the page shows questions left and a clear banner when reached | Accepted (user) |
+| D62 | Chat UI = one static HTML page (plain JS) served by FastAPI: answer text, clarification/follow-up buttons, "waiting for capacity" message, New chat | Accepted (user) |
+| D63 | Endpoints (B): `GET /` page, `POST /api/chat`, `GET /api/status` (health + questions left + versions), LLM-free `GET /api/rankings`, FastAPI's interactive `/docs`. Only `/api/chat` needs the access code (the only endpoint that spends LLM quota) | Accepted (user) |
 | D58 | Step-4 weakness review: fix #4 now (D57); SQLite per-request connections in step 5; stronger evals in step 6; the rest documented in README "Known limitations" | Accepted (user) |

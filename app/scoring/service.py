@@ -14,22 +14,41 @@ from app.scoring.engine import (LocationScore, Ranking, ScoringConfig, cross_sou
                                 nri_scales, rank_locations, score_location)
 
 
+class _Memo:
+    """Hub scores and national scales, computed once and shared by every request (read-only afterwards)."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.scales: dict[str, float] | None = None
+        self.hub_scores: dict[str, LocationScore] = {}
+
+
 class ScoringService:
-    def __init__(self, http: CachedHttp, cfg: ScoringConfig | None = None):
+    def __init__(self, http: CachedHttp, cfg: ScoringConfig | None = None, memo: _Memo | None = None):
         self.http = http
         self.cfg = cfg or load_scoring_config()
-        self._lock = threading.Lock()
-        self._scales: dict[str, float] | None = None
-        self._hub_scores: dict[str, LocationScore] = {}
+        self._memo = memo or _Memo()
+
+    def with_http(self, http: CachedHttp) -> "ScoringService":
+        """Same memoized scores, different DB connection (one SQLite connection per request thread, D58)."""
+        return ScoringService(http, self.cfg, self._memo)
+
+    @property
+    def _lock(self) -> threading.Lock:
+        return self._memo.lock
+
+    @property
+    def _hub_scores(self) -> dict[str, LocationScore]:
+        return self._memo.hub_scores
 
     def scales(self) -> dict[str, float]:
         with self._lock:
-            if self._scales is None:
+            if self._memo.scales is None:
                 counties = fema_nri.load_counties(self.http.conn)
                 if not counties:
                     raise RuntimeError("NRI county table is empty; run scripts/refresh_data.py first")
-                self._scales = nri_scales(counties, self.cfg)
-            return self._scales
+                self._memo.scales = nri_scales(counties, self.cfg)
+            return self._memo.scales
 
     def _raw_score(self, lat: float, lon: float, key: str, label: str, hub_id: str | None) -> LocationScore:
         grid = open_meteo.archive_daily(self.http, lat, lon, BASELINE_START, BASELINE_END)
@@ -44,7 +63,8 @@ class ScoringService:
         scores = {h.id: self._raw_score(h.lat, h.lon, h.id, h.label, h.id) for h in hub_registry().hubs}
         cross_source_check(list(scores.values()), self.cfg)
         with self._lock:
-            self._hub_scores = scores
+            if not self._memo.hub_scores:
+                self._memo.hub_scores.update(scores)
 
     def hub_score(self, hub: Hub) -> LocationScore:
         self._ensure_hubs()
