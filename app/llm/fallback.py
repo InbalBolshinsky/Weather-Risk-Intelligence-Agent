@@ -15,15 +15,21 @@ from app.llm.openai_compat import OpenAICompatProvider
 
 
 class AllProvidersFailed(Exception):
-    """`retry_after` (seconds) is set when every provider was rate-limited: the shortest wait any of them reported."""
+    """`retry_after` (seconds) is set when every provider was rate-limited: the shortest wait any of them reported.
+    `malformed_only` is True when every failure was a malformed tool call (no capacity problem at all, D80)."""
 
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None, malformed_only: bool = False):
         super().__init__(message)
         self.retry_after = retry_after
+        self.malformed_only = malformed_only
 
 
 def _shortest_wait(waits: list[float | None]) -> float | None:
     return min(waits) if waits and all(w is not None for w in waits) else None  # type: ignore[type-var]
+
+
+def _all_malformed(kinds: list[str]) -> bool:
+    return bool(kinds) and all(k == "malformed" for k in kinds)
 
 
 MAX_CAPACITY_WAIT_S = 30.0   # D40: when every provider is rate-limited, wait once (at most this long), then retry
@@ -39,7 +45,7 @@ class FallbackProvider:
         self.events: list[str] = []   # per-call log of fallbacks/retries, surfaced in the API debug field
 
     def _pass(self, messages: list[Message], tools: list[dict], tool_choice: ToolChoice,
-              errors: list[str], waits: list[float | None]) -> LLMTurn | None:
+              errors: list[str], waits: list[float | None], kinds: list[str]) -> LLMTurn | None:
         for p in self.providers:
             for attempt in (1, 2):
                 try:
@@ -48,23 +54,27 @@ class FallbackProvider:
                     self.events.append(f"malformed tool call from {p.name} (attempt {attempt})")
                     errors.append(str(e))
                     waits.append(None)
+                    kinds.append("malformed")
                     if attempt == 1:
                         continue
                 except ProviderUnavailable as e:
                     self.events.append(f"ProviderUnavailable: {e}")
                     errors.append(str(e))
                     waits.append(e.retry_after)
+                    kinds.append("unavailable")
                 except ProviderError as e:
                     self.events.append(f"ProviderError: {e}")
                     errors.append(str(e))
                     waits.append(None)
+                    kinds.append("error")
                 break
         return None
 
     def complete(self, messages: list[Message], tools: list[dict], tool_choice: ToolChoice) -> LLMTurn:
         errors: list[str] = []
         waits: list[float | None] = []
-        turn = self._pass(messages, tools, tool_choice, errors, waits)
+        kinds: list[str] = []
+        turn = self._pass(messages, tools, tool_choice, errors, waits, kinds)
         if turn is not None:
             return turn
         # D40: if every provider failed only because of rate limits, wait once for the shortest reported
@@ -78,12 +88,13 @@ class FallbackProvider:
             wait = max(shortest, 1.0)
             self.events.append(f"all providers rate-limited: waited {wait:.0f}s for capacity")
             self.sleep(wait)
-            waits = []
-            turn = self._pass(messages, tools, tool_choice, errors, waits)
+            waits, kinds = [], []
+            turn = self._pass(messages, tools, tool_choice, errors, waits, kinds)
             if turn is not None:
                 return turn
-            raise AllProvidersFailed("; ".join(errors), retry_after=_shortest_wait(waits))
-        raise AllProvidersFailed("; ".join(errors))
+            raise AllProvidersFailed("; ".join(errors), retry_after=_shortest_wait(waits),
+                                     malformed_only=_all_malformed(kinds))
+        raise AllProvidersFailed("; ".join(errors), malformed_only=_all_malformed(kinds))
 
 
 def build_chain(path: Path | None = None, only: str | None = None) -> FallbackProvider:

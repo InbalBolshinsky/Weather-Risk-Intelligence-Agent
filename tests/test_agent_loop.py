@@ -302,6 +302,36 @@ def test_long_rate_limit_fails_at_once_with_the_real_wait():   # D74: e.g. Groq'
     assert slept == [] and e.value.retry_after == 398
 
 
+BUSY = "The AI model is busy or unavailable right now (free-tier limits). Please try again in a minute."
+
+
+def _user_sees(agent_factory, *fakes) -> str:
+    """The real fallback chain inside the real agent, with scripted fake models (no network)."""
+    return agent_factory(FallbackProvider(list(fakes), sleep=lambda s: None)).chat("hi").answer["answer_markdown"]
+
+
+def test_all_models_malformed_gets_the_rephrase_message(agent_factory):   # D80: e.g. Groq 400 schema validation
+    a = Fake("a", MalformedToolCall("400 missing interpreted_from"), MalformedToolCall("400"))
+    b = Fake("b", MalformedToolCall("400"), MalformedToolCall("400"))
+    assert _user_sees(agent_factory, a, b) == ("The AI model couldn't complete this request. "
+                                               "Please try again or rephrase it.")
+
+
+def test_all_models_rate_limited_keeps_the_quota_and_busy_messages(agent_factory):   # D74 messages unchanged
+    long_wait = _user_sees(agent_factory, Fake("a", ProviderUnavailable("rl", retry_after=398)),
+                           Fake("b", ProviderUnavailable("rl", retry_after=900)))
+    assert long_wait == "The free AI model quota is used up for now. Please try again in about 7 minutes."
+    outage = _user_sees(agent_factory, Fake("a", ProviderUnavailable("timeout")), Fake("b", ProviderUnavailable("down")))
+    assert outage == BUSY
+
+
+def test_mixed_failures_keep_the_busy_message(agent_factory):
+    """One model rate-limited, the other malformed: capacity is part of the problem, so retrying later can work."""
+    a = Fake("a", ProviderUnavailable("rl", retry_after=398))
+    b = Fake("b", MalformedToolCall("400"), MalformedToolCall("400"))
+    assert _user_sees(agent_factory, a, b) == BUSY
+
+
 def test_busy_message_states_the_wait():
     from app.agent.loop import busy_message
     assert "in a minute" in busy_message(None) and "in a minute" in busy_message(45)

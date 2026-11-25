@@ -88,6 +88,15 @@ class TurnResult:
     provider_failed: bool = False   # no model answered (rate limits/outage): the API doesn't count the question
 
 
+MALFORMED_MESSAGE = "The AI model couldn't complete this request. Please try again or rephrase it."
+
+
+def failure_message(e: AllProvidersFailed) -> str:
+    """D80: every model sent malformed tool calls (no capacity problem) -> say so; any rate limit or outage in the
+    mix keeps the busy/quota message (D74), since retrying later can then succeed."""
+    return MALFORMED_MESSAGE if e.malformed_only else busy_message(e.retry_after)
+
+
 def busy_message(retry_after: float | None) -> str:
     """D74: tell the user the real wait when the provider reported one (e.g. the daily token limit)."""
     if retry_after is None or retry_after <= 60:
@@ -227,7 +236,7 @@ class Agent:
         try:
             final, verdict = self._rounds(t, history_allowed)
         except AllProvidersFailed as e:
-            final = _error_answer(busy_message(e.retry_after))
+            final = _error_answer(failure_message(e))
             provider_failed = True
             t.debug["events"].append(f"all providers failed: {e}")
             t.turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
