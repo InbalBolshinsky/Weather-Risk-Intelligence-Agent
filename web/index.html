@@ -5,11 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Weather Risk Agent</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#667085; --line:#e3e6eb; --accent:#1f5eff;
-          --user:#e8efff; --warn-bg:#fff4e5; --warn:#8a4b00; --err-bg:#fdecec; --err:#a11; }
+  /* Calm purple palette: dark purple accent + pastel purple surfaces (light), the inverse in dark mode. */
+  :root { --bg:#f7f5fb; --card:#fff; --text:#241f33; --muted:#6e6880; --line:#e6e0f0; --accent:#4b3a78;
+          --on-accent:#fff; --user:#ebe4f7; --warn-bg:#fff4e5; --warn:#8a4b00; --err-bg:#fdecec; --err:#a11; }
   @media (prefers-color-scheme: dark) {
-    :root { --bg:#14161b; --card:#1d2027; --text:#e7e9ee; --muted:#9aa3b2; --line:#2c3039; --accent:#7aa2ff;
-            --user:#24304d; --warn-bg:#3a2c14; --warn:#ffcf8a; --err-bg:#3d1f1f; --err:#ffb3b3; }
+    :root { --bg:#16131d; --card:#1f1b29; --text:#ece8f4; --muted:#a49db5; --line:#2f2940; --accent:#c4b2ec;
+            --on-accent:#1f1830; --user:#352b4f; --warn-bg:#3a2c14; --warn:#ffcf8a; --err-bg:#3d1f1f; --err:#ffb3b3; }
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
@@ -32,7 +33,8 @@
   input[type=text], input[type=password] { flex:1; min-width:0; padding:10px 12px; border:1px solid var(--line);
           border-radius:10px; background:var(--card); color:var(--text); font:inherit; }
   button.primary, button.ghost { padding:10px 14px; border-radius:10px; font:inherit; cursor:pointer; }
-  button.primary { border:0; background:var(--accent); color:#fff; }
+  button.primary { border:0; background:var(--accent); color:var(--on-accent); }
+  a { color:var(--accent); }
   button.ghost { border:1px solid var(--line); background:transparent; color:var(--text); }
   button:disabled { opacity:.5; cursor:default; }
   .hint { color:var(--muted); font-size:13px; }
