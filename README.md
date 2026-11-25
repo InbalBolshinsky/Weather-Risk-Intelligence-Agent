@@ -13,7 +13,7 @@ Open-Meteo ERA5, NOAA stations, NWS alerts); the LLM only picks tools and explai
 **https://weather-risk-agent-pzle.onrender.com**
 
 - Asking questions needs the **access code sent with the submission**. Open
-  `https://weather-risk-agent-pzle.onrender.com/?code=<access code>` once; the page remembers it.
+  `https://weather-risk-agent-pzle.onrender.com/#code=<access code>` once; the page remembers it (the part after `#` never reaches the server, so the code stays out of logs).
 - **The first load can take about a minute:** the free server sleeps after 15 minutes without visitors. The page
   shows "Waking up the server…" and retries on its own.
 - Limits: 30 questions per conversation, 80 per day (free-tier LLM quota).

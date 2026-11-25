@@ -103,7 +103,10 @@ def check_score_changes(scoring: ScoringService, webhook_url: str | None, path: 
             if save:
                 _write(path, current)
             return {"status": "baseline_created", "changes": [], "webhook": "not sent"}
-        baseline = json.loads(path.read_text())
+        try:
+            baseline = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError) as e:   # never a 500; fix or delete the file, the next check recreates it
+            return {"status": "baseline_unreadable", "changes": [], "webhook": "not sent", "error": type(e).__name__}
         cfg = scoring.cfg
         changes, new = diff(baseline, current, cfg.ranking.tie_points, cfg.flags.extreme_hazard_score)
         result: dict[str, Any] = {"status": "changes" if changes else "no_changes", "changes": changes,

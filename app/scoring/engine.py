@@ -22,11 +22,11 @@ from app.scoring.normalize import fmt_value, linear_to_scale, percentile_value, 
 HAZARDS = ("winter", "hurricane", "flood", "severe_convective", "heat")
 Hazard = Literal["winter", "hurricane", "flood", "severe_convective", "heat"]
 Level = Literal["high", "medium", "low"]
-_LEVEL_ORDER = {"high": 2, "medium": 1, "low": 0}
+LEVEL_ORDER = {"high": 2, "medium": 1, "low": 0}
 
 
 def worst(levels: list[Level]) -> Level:
-    return min(levels, key=lambda lv: _LEVEL_ORDER[lv]) if levels else "high"
+    return min(levels, key=lambda lv: LEVEL_ORDER[lv]) if levels else "high"
 
 
 # ----------------------------------------------------------------------------- config

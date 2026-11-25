@@ -194,6 +194,46 @@ def test_real_methodology_tool_has_no_confidence_field(tmp_path):
     assert "confidence" not in out and "confidence_rules" in out
 
 
+def test_methodology_states_the_configured_percentile(tmp_path):   # review: was hard-coded "95th" (config: 99)
+    from app.agent.tools import MethodArgs, get_methodology
+    http = CachedHttp(connect(tmp_path / "t.db"))
+    scoring = ScoringService(http)
+    out = get_methodology(ToolContext(http, scoring, date(2026, 11, 25)), MethodArgs(topic="overall"))
+    assert f"{scoring.cfg.nri_scale_percentile:g}th-percentile" in out["normalization"]
+
+
+def test_top_n_out_of_range_is_clamped():   # review: top_n=-5 used to return "top 15 of 20"
+    from app.agent.tools import RankArgs
+    assert RankArgs(hazard="overall", region=None, top_n=-5).top_n is None
+    assert RankArgs(hazard="overall", region=None, top_n=0).top_n is None
+    assert RankArgs(hazard="overall", region=None, top_n=50).top_n == 20
+    assert RankArgs(hazard="overall", region=None, top_n=3).top_n == 3
+
+
+def test_non_hub_weather_stat_respects_the_daily_open_meteo_cap(tmp_path, monkeypatch):   # review (D49)
+    import app.agent.tools as tools
+    from app.geo.resolver import Resolution
+    from app.store.db import bump_counter
+    http = CachedHttp(connect(tmp_path / "t.db"))
+    ctx = ToolContext(http, ScoringService(http), date(2026, 11, 25), clock_day=lambda: "2026-11-25")
+    for _ in range(tools.LIVE_PROFILE_DAILY_CAP):
+        bump_counter(http.conn, "2026-11-25", "live_profile", tools.LIVE_PROFILE_DAILY_CAP)
+    monkeypatch.setattr(tools, "_resolve_places", lambda c, p: [Resolution("Boise", "geocoded", None, "Boise, ID", 43.6, -116.2)])
+    monkeypatch.setattr(tools.open_meteo, "archive_daily", lambda *a, **k: pytest.fail("live download despite the cap"))
+    out = tools.get_weather_stat(ctx, tools.StatArgs(places=[tools.Place(query="Boise", interpreted_from=None)],
+                                                     metric="snow_days", start_date="2025-01-01", end_date="2025-12-31"))
+    assert "daily limit" in out["results"][0]["note"]
+
+
+def test_provider_failure_is_flagged_and_bugs_dont_leak_details(agent_factory):
+    from app.llm.fallback import AllProvidersFailed
+    r = agent_factory(Script(AllProvidersFailed("rate limited", retry_after=400))).chat("hi")
+    assert r.provider_failed and r.answer["response_type"] == "error"
+    r = agent_factory(Script(RuntimeError("secret path /srv/app.db"))).chat("hi")
+    assert not r.provider_failed and "internal error: RuntimeError" in r.debug["events"]
+    assert "secret path" not in json.dumps(r.debug)
+
+
 def test_tool_error_message_counts_as_grounding_source(tmp_path, monkeypatch):
     """Eval run 2: quoting the tool's own error ('max 30 years') must not be flagged as unverified."""
     monkeypatch.setattr(loop_mod, "run_tool",

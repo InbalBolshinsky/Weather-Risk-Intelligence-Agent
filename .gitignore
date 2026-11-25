@@ -8,3 +8,4 @@ data/*.db-*
 evals/results/*.json
 !evals/results/.gitkeep
 .DS_Store
+tests/fixtures/_verify_report*.json

@@ -11,7 +11,7 @@ import secrets
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable, Literal
+from typing import Any, Callable
 
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Query
@@ -20,7 +20,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from app.agent.loop import Agent
-from app.agent.tools import RankArgs, ToolContext, rank_hubs
+from app.agent.tools import HazardArg, RankArgs, RegionArg, ToolContext, rank_hubs
 from app.config import ROOT
 from app.data import fema_nri
 from app.data.http import CachedHttp
@@ -28,7 +28,7 @@ from app.llm.base import LLMProvider
 from app.llm.fallback import build_chain
 from app.scoring.alerts import check_score_changes
 from app.scoring.service import ScoringService
-from app.store.db import bump_counter, connect
+from app.store.db import bump_counter, connect, unbump_counter
 
 load_dotenv(ROOT / ".env")
 
@@ -36,6 +36,8 @@ DAILY_CAP = int(os.getenv("DAILY_CAP", "80"))               # D61: below Groq's 
 CONVERSATION_CAP = int(os.getenv("CONVERSATION_CAP", "30"))  # D60
 WEB_PAGE = ROOT / "web" / "index.html"
 _SESSION_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+DAILY_LIMIT_MSG = ("Today's demo limit is reached (free-tier quotas). It resets at 00:00 UTC. "
+                   "To run without limits, see the README.")
 
 # ----------------------------------------------------------------------------- per-thread DB (D58)
 
@@ -88,7 +90,8 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
 
     def require_access(code: str | None = Depends(access_header)) -> None:
         expected = os.getenv("DEMO_TOKEN")
-        if expected and not (code and secrets.compare_digest(code, expected)):
+        # bytes: compare_digest raises TypeError (a 500) on non-ASCII strings
+        if expected and not (code and secrets.compare_digest(code.encode(), expected.encode())):
             raise HTTPException(401, detail={"error": "access_code", "message": "Missing or wrong access code."})
 
     @app.get("/", include_in_schema=False)
@@ -113,10 +116,11 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
         day = utc_today()
         if not bump_counter(http.conn, day, "chat", DAILY_CAP):
             raise HTTPException(429, detail={"error": "daily_limit", "questions_left_today": 0,
-                                             "message": "Today's demo limit is reached (free-tier quotas). It resets "
-                                                        "at 00:00 UTC. To run without limits, see the README."})
+                                             "message": DAILY_LIMIT_MSG})
         ctx = ToolContext(http, scoring.with_http(http), datetime.now(timezone.utc).date())
         result = Agent(provider_factory(), ctx).chat(req.message, req.session_id)
+        if result.provider_failed:   # no model answered: don't use up a question of the daily cap
+            unbump_counter(http.conn, day, "chat")
         a = result.answer
         return {"session_id": result.session_id, "answer": a["answer_markdown"], "response_type": a["response_type"],
                 "clarifying_question": a.get("clarifying_question"),
@@ -139,7 +143,8 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
                 "nri_version": counties[0].nri_ver if counties else None,
                 "config_version": scoring.cfg.version, "models": models,
                 "questions_left_today": questions_left(http, utc_today()), "daily_cap": DAILY_CAP,
-                "conversation_cap": CONVERSATION_CAP, "access_code_required": bool(os.getenv("DEMO_TOKEN"))}
+                "conversation_cap": CONVERSATION_CAP, "access_code_required": bool(os.getenv("DEMO_TOKEN")),
+                "daily_limit_message": DAILY_LIMIT_MSG}
 
     @app.post("/api/alerts/check", dependencies=[Depends(require_access)])
     def alerts_check() -> dict[str, Any]:
@@ -151,8 +156,7 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
         return check_score_changes(scoring.with_http(http), os.getenv("ALERT_WEBHOOK_URL"))
 
     @app.get("/api/rankings")
-    def rankings(hazard: Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"] = "overall",
-                 region: Literal["northeast", "midwest", "south", "west"] | None = Query(None)) -> dict[str, Any]:
+    def rankings(hazard: HazardArg = "overall", region: RegionArg | None = Query(None)) -> dict[str, Any]:
         """The scoring engine's ranking, with no LLM involved: compare it with the agent's answers."""
         http = db_http()
         ctx = ToolContext(http, scoring.with_http(http), datetime.now(timezone.utc).date())

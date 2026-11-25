@@ -8,6 +8,7 @@ retry if needed -> persist the turn. The user sees only answer_markdown (D41); r
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 import time
@@ -24,10 +25,11 @@ from app.agent.tools import DATA_TOOLS, TOOL_SPECS, ToolContext, run_tool
 from app.config import hub_registry
 from app.llm.base import LLMProvider, Message
 from app.llm.fallback import AllProvidersFailed
+from app.scoring.engine import LEVEL_ORDER, worst
 
+log = logging.getLogger(__name__)
 TOOLS = TOOL_SPECS + [SUBMIT_ANSWER_SPEC]
 MAX_ROUNDS = 8
-_LEVELS = {"high": 2, "medium": 1, "low": 0}
 _NUM = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
 _CONF = re.compile(r"confidence\**\s*[:\-–—]\s*\**\s*(high|medium|low)\b", re.IGNORECASE)   # tolerates **bold**
 
@@ -83,6 +85,7 @@ class TurnResult:
     unverified: bool
     ungrounded_numbers: list[str]
     debug: dict[str, Any]
+    provider_failed: bool = False   # no model answered (rate limits/outage): the API doesn't count the question
 
 
 def busy_message(retry_after: float | None) -> str:
@@ -105,16 +108,22 @@ def _compact(answer: dict[str, Any]) -> str:
     return answer.get("answer_markdown", "") + (f"\n[places: {places}]" if places else "")
 
 
-def confidence_line(text: str) -> str:
+def extract_confidence_line(text: str) -> str:
     """The last line that states a confidence level ('' if none)."""
     lines = [ln for ln in (text or "").split("\n") if _CONF.search(ln)]
     return lines[-1] if lines else ""
 
 
+def lowest_confidence(data_results: list[tuple[str, dict]]) -> str | None:
+    """D28: the turn's confidence = the lowest level among its data-tool results (None if none reported one)."""
+    levels = [r["confidence"] for _, r in data_results if r.get("confidence") in LEVEL_ORDER]
+    return worst(levels) if levels else None
+
+
 def _fix_confidence_line(text: str, level: str, reason: str | None) -> str:
     """D51: after a failed repair, the code writes the whole line with its own level and reason."""
     line = f"Confidence: {level}" + (f" - {reason}" if reason and level != "high" else "")
-    old = confidence_line(text)
+    old = extract_confidence_line(text)
     if old:
         return text.replace(old, line)
     return text.rstrip() + f"\n\n{line}"
@@ -195,7 +204,7 @@ class Agent:
                                 f"you wrote {stated or 'none'})")
             elif expected_conf != "high" and expected_reason:
                 # D52: the line must explain WHY, with the conflicting facts (their numbers) from the tool result.
-                missing = sorted(numbers_in(expected_reason) - numbers_in(confidence_line(ans.answer_markdown)))
+                missing = sorted(numbers_in(expected_reason) - numbers_in(extract_confidence_line(ans.answer_markdown)))
                 if missing:
                     conf_wrong = True
                     problems.append(f"confidence line must explain why it is {expected_conf}, using these facts "
@@ -220,6 +229,7 @@ class Agent:
         repairs_left = 1
         final: AgentAnswer | None = None
         verdict: Verdict | None = None
+        provider_failed = False
 
         try:
             for _ in range(self.max_rounds):
@@ -263,8 +273,7 @@ class Agent:
                         turn_msgs.append(dup)
                 if submit is None:
                     continue
-                levels = [r.get("confidence") for _, r in data_results if r.get("confidence") in _LEVELS]
-                expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
+                expected = lowest_confidence(data_results)
                 expected_reason = next((r["confidence_reason"] for _, r in data_results
                                         if r.get("confidence") == expected and r.get("confidence_reason")), None)
                 verdict = self._check(submit.arguments, sources, expected, expected_reason, history_allowed)
@@ -294,18 +303,19 @@ class Agent:
                 final = _error_answer("Sorry, I couldn't finish this request within the step limit. Please narrow it down.")
         except AllProvidersFailed as e:
             final = _error_answer(busy_message(e.retry_after))
+            provider_failed = True
             debug["events"].append(f"all providers failed: {e}")
             turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
         except Exception as e:  # noqa: BLE001 - a bug must not become an HTTP 500 mid-demo; it's logged in debug
             final = _error_answer("Sorry, something went wrong while answering. Please try again.")
-            debug["events"].append(f"internal error: {type(e).__name__}: {e}")
+            log.exception("agent turn failed")   # full details in the server log only
+            debug["events"].append(f"internal error: {type(e).__name__}")   # type only: debug reaches the browser
             turn_msgs = [user_msg]
 
         debug["events"] = getattr(self.provider, "events", [])[events_before:] + debug["events"]
         debug["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         answer = final.model_dump()
-        levels = [r.get("confidence") for _, r in data_results if r.get("confidence") in _LEVELS]
-        confidence = min(levels, key=lambda c: _LEVELS[c]) if levels and final.response_type == "answer" else None
+        confidence = lowest_confidence(data_results) if final.response_type == "answer" else None
         ungrounded = verdict.ungrounded if (verdict and final is verdict.answer) else []
         self._save(session_id, message, turn_msgs, {**answer, "unverified_numbers": ungrounded})
-        return TurnResult(session_id, answer, confidence, bool(ungrounded), ungrounded, debug)
+        return TurnResult(session_id, answer, confidence, bool(ungrounded), ungrounded, debug, provider_failed)

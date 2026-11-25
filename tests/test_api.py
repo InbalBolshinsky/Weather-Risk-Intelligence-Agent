@@ -61,6 +61,20 @@ def test_conversation_and_daily_caps(client):
     assert r.status_code == 429 and r.json()["detail"]["error"] == "daily_limit"
 
 
+def test_non_ascii_access_code_is_a_401_not_a_500(client):   # review: compare_digest TypeError
+    r = client.post("/api/chat", json={"message": "hi"}, headers={"X-Access-Code": "café".encode()})
+    assert r.status_code == 401
+
+
+def test_question_no_model_answered_is_not_counted(client, monkeypatch):   # review: refund on provider failure
+    import app.main as main
+    from app.agent.loop import Agent, TurnResult
+    monkeypatch.setattr(Agent, "chat", lambda self, m, s=None: TurnResult(
+        "s1", {"answer_markdown": "busy", "response_type": "error"}, None, False, [], {}, provider_failed=True))
+    r = client.post("/api/chat", json={"message": "hi"}, headers={"X-Access-Code": "s3cret"})
+    assert r.status_code == 200 and r.json()["questions_left_today"] == main.DAILY_CAP
+
+
 def test_alert_check_requires_the_code_and_loaded_data(client):   # D76
     assert client.post("/api/alerts/check").status_code == 401
     r = client.post("/api/alerts/check", headers={"X-Access-Code": "s3cret"})

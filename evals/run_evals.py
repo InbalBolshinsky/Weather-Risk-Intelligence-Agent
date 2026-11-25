@@ -70,7 +70,7 @@ def report_md(rows: list[dict], meta: dict) -> str:
               f"| Avg latency | {sum(r['latency_ms'] for r in answered) / max(len(answered), 1) / 1000:.1f} s |",
               f"| Repairs / malformed calls / capacity waits | {sum(r['repairs'] for r in rows)} / "
               f"{sum(r['malformed'] for r in rows)} / {sum(r['waits'] for r in rows)} |",
-              f"| Answered by | " + ", ".join(f"{m}: {sum(r['model'] == m for r in rows)}"
+              "| Answered by | " + ", ".join(f"{m}: {sum(r['model'] == m for r in rows)}"
                                               for m in sorted({r['model'] for r in rows if r['model']})) + " |",
               "", "## Cases", ""]
     for r in rows:

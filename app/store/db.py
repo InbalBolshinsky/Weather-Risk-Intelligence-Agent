@@ -60,6 +60,12 @@ def bump_counter(conn: sqlite3.Connection, day: str, key: str, limit: int) -> bo
     return True
 
 
+def unbump_counter(conn: sqlite3.Connection, day: str, key: str) -> None:
+    """Give one back (e.g. a question no model could answer shouldn't use up the daily cap)."""
+    conn.execute("UPDATE usage_counters SET count = count - 1 WHERE day=? AND key=? AND count > 0", (day, key))
+    conn.commit()
+
+
 def restore_snapshot(path: Path) -> bool:
     """D72: on a fresh host (no database yet), unpack the committed data snapshot so the app answers from cache."""
     snapshot = path.parent / "snapshot.db.gz"

@@ -141,12 +141,15 @@ const EXAMPLES = ["Which hubs in the Midwest are most exposed to winter disrupti
 const $ = (id) => document.getElementById(id);
 let sessionId = null, busy = false, stopped = false;
 
-// Access code (D59): taken once from ?code=..., stored locally, removed from the address bar.
+// Access code (D59): taken once from #code=... (the part after # never reaches the server, so the code stays out of
+// access logs; ?code=... still works), stored locally, removed from the address bar.
 function store(k, v) { try { v === null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch (e) {} }
 function load(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
 const url = new URL(location.href);
-if (url.searchParams.get("code")) { store("access_code", url.searchParams.get("code"));
-  url.searchParams.delete("code"); history.replaceState(null, "", url.pathname + url.search); }
+const fromHash = new URLSearchParams(url.hash.slice(1)).get("code");
+const linkCode = fromHash || url.searchParams.get("code");
+if (linkCode) { store("access_code", linkCode); url.searchParams.delete("code");
+  history.replaceState(null, "", url.pathname + url.search); }
 
 function esc(s) { return s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
 function md(text) {   // minimal, safe markdown: escape first, then **bold**, *italic*, bullet lists, paragraphs
@@ -291,7 +294,7 @@ async function connect() {
         setLeft(s.questions_left_today);
         if (s.access_code_required && !load("access_code")) $("codebox").hidden = false;
         if (s.questions_left_today === 0) { stopped = true; lock(false);
-          banner("Today's demo limit is reached (free-tier quotas). It resets at 00:00 UTC. To run without limits, see the README."); }
+          banner(s.daily_limit_message); }
         return;
       }
     } catch (e) {}

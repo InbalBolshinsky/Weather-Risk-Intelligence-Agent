@@ -6,18 +6,18 @@ resolver; every result is compact, display-ready JSON (numbers already rounded, 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import BASELINE_END, BASELINE_START, hub_registry
 from app.data import ghcn, nws, open_meteo
 from app.data.http import CachedHttp
 from app.data.series import GUST_MAX, PRECIP, SNOWFALL, TMAX, TMIN, DailySeries
 from app.geo.resolver import Resolution, resolve
-from app.scoring.engine import HAZARDS, LocationScore
+from app.scoring.engine import HAZARDS, LEVEL_ORDER, LocationScore, worst
 from app.scoring.kpis import days_meeting
 from app.scoring.normalize import fmt_percent, fmt_score
 from app.scoring.service import ScoringService
@@ -29,12 +29,16 @@ MAX_HUB_STAT_DAYS = 10958      # D46: hubs up to 30 years from the NOAA station 
 MAX_GRID_STAT_DAYS = 3653      # D46: places without a station (grid model only) up to 10 years
 STATION_MIN_COVERAGE = 0.95
 # D45: no data-lag constant. Windows are trimmed to the last day the source actually has data.
-_LEVELS = {"high": 2, "medium": 1, "low": 0}
 
-HazardArg = Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"]
+HazardArg = Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"]   # also used by main.py
 RegionArg = Literal["northeast", "midwest", "south", "west"]
 MetricArg = Literal["snow_days", "precip_days", "heavy_precip_days", "freezing_days", "hot_days", "high_gust_days"]
-TopicArg = Literal["overall", "winter", "hurricane", "flood", "severe_convective", "heat"]
+MAX_TOP_N = 20
+
+
+def utc_day() -> str:
+    """The day key for daily caps: UTC everywhere, so all counters reset together."""
+    return datetime.now(timezone.utc).date().isoformat()
 
 
 # ----------------------------------------------------------------------------- argument models (validation)
@@ -50,6 +54,12 @@ class RankArgs(BaseModel):
     hazard: HazardArg
     region: RegionArg | None
     top_n: int | None = None
+
+    @field_validator("top_n")
+    @classmethod
+    def _clamp_top_n(cls, v: int | None) -> int | None:
+        """A negative top_n used to slice from the end ("top 15 of 20" for -5): <1 means default, cap at 20."""
+        return None if v is None or v < 1 else min(v, MAX_TOP_N)
 
 
 class ProfileArgs(BaseModel):
@@ -72,7 +82,7 @@ class AlertArgs(BaseModel):
 
 class MethodArgs(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    topic: TopicArg
+    topic: HazardArg
 
 
 # ----------------------------------------------------------------------------- weather-stat metric definitions
@@ -103,7 +113,7 @@ class ToolContext:
     http: CachedHttp
     scoring: ScoringService
     today: date
-    clock_day: Callable[[], str] = field(default=lambda: date.today().isoformat())
+    clock_day: Callable[[], str] = utc_day
 
 
 class ToolError(Exception):
@@ -160,7 +170,7 @@ def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
     ties = [[k for k in g if k in keys] for g in r.tie_groups]
     if any(len(g) > 1 for g in ties):
         out["tie_groups"] = [g for g in ties if len(g) > 1]
-    level = min((e["confidence"] for e in entries[:3]), key=lambda c: _LEVELS[c], default="high")
+    level = worst([e["confidence"] for e in entries[:3]])
     reason = next((f"{e['hub']}: {e['confidence_reason']}" for e in entries[:3]
                    if e["confidence"] == level and e.get("confidence_reason")), None)
     out["confidence"] = level
@@ -222,7 +232,7 @@ def get_risk_profile(ctx: ToolContext, a: ProfileArgs) -> dict:
             comp[h] = f"highest {hi[0]} {hi[1]}, lowest {lo[0]} {lo[1]}, gap {hi[1] - lo[1]}"
         out["comparison"] = comp
     if scored:
-        weakest_name, weakest = min(scored, key=lambda x: _LEVELS[x[1].confidence])
+        weakest_name, weakest = min(scored, key=lambda x: LEVEL_ORDER[x[1].confidence])
         level = weakest.confidence
         reason = f"{weakest_name}: {weakest.confidence_reasons[0]}" if weakest.confidence_reasons and level != "high" else None
         out["confidence"] = level
@@ -283,7 +293,7 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
     m = METRICS[a.metric]
     reg = hub_registry()
     results = []
-    worst = "high"
+    level = "high"
     reason: str | None = None
     for r in _resolve_places(ctx, a.places):
         if not r.usable:
@@ -295,6 +305,12 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
         # Grid model: free from the cached 2016-2025 baseline; outside it only for non-hubs (<= 10 years), because
         # hubs have the station (D46) and a long grid download costs ~470 Open-Meteo calls for 30 years.
         grid_block = None
+        wants_grid = in_baseline or (hub is None and days <= MAX_GRID_STAT_DAYS)
+        # A non-hub grid download costs up to ~157 Open-Meteo calls: it shares the non-hub daily cap (D49).
+        if hub is None and wants_grid and not bump_counter(ctx.http.conn, ctx.clock_day(), "live_profile",
+                                                           LIVE_PROFILE_DAILY_CAP):
+            results.append({**entry, "note": "daily limit for places that aren't hubs reached; try tomorrow"})
+            continue
         if in_baseline:
             grid = open_meteo.archive_daily(ctx.http, lat, lon, BASELINE_START, BASELINE_END).window(s, e)  # type: ignore[arg-type]
         elif hub is None and days <= MAX_GRID_STAT_DAYS:
@@ -332,7 +348,7 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
         elif grid_block:
             entry["primary"] = grid_block
             if a.metric == "snow_days":
-                worst = "medium"
+                level = "medium"
                 reason = ("no station snowfall measurements here, so the count comes from the grid model, which "
                           "tends to overcount light-snow days")
         else:
@@ -343,10 +359,10 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
             entry["caveat"] = ("grid-model snow converts snow water to depth at a fixed 7:1 ratio and tends to "
                                "overcount light-snow days compared with station measurements")
         results.append(entry)
-    out: dict[str, Any] = {"metric": a.metric, "results": results, "confidence": worst}
+    out: dict[str, Any] = {"metric": a.metric, "results": results, "confidence": level}
     if reason:
         out["confidence_reason"] = reason
-    out["confidence_line"] = confidence_line(worst, reason, "measured at the airport weather station")
+    out["confidence_line"] = confidence_line(level, reason, "measured at the airport weather station")
     return out
 
 
@@ -377,7 +393,7 @@ def get_methodology(ctx: ToolContext, a: MethodArgs) -> dict:
             "hazard_weights": cfg.hazard_weights,
             "weights_rationale": "by shutdown potential: heat mostly slows operations and rarely closes a hub",
             "normalization": ("observed-weather KPIs: fixed scales set at roughly the worst plausible US metro; "
-                              "FEMA KPIs: linear from 0 to the national 95th-percentile county"),
+                              f"FEMA KPIs: linear from 0 to the national {cfg.nri_scale_percentile:g}th-percentile county"),
             "confidence_rules": ("lowered when data is missing, when FEMA county data and observed weather rank a hub "
                            f">= {cfg.confidence.disagreement_rank_gap} places apart, or for known location caveats"),
             "ties": f"hubs within {fmt_score(cfg.ranking.tie_points)} points are not meaningfully different",

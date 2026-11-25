@@ -81,6 +81,13 @@ def test_failed_send_keeps_baseline_for_retry(tmp_path, fake_scoring):
     assert check_score_changes(scoring, "https://hook", path, post=Post())["webhook"] == "sent"
 
 
+def test_unreadable_baseline_is_reported_not_a_crash(tmp_path, fake_scoring):   # review
+    scoring, _ = fake_scoring
+    path = tmp_path / "baseline.json"
+    path.write_text("{not json")
+    assert check_score_changes(scoring, None, path)["status"] == "baseline_unreadable"
+
+
 def test_no_save_leaves_baseline_untouched(tmp_path, fake_scoring):
     scoring, state = fake_scoring
     path = tmp_path / "baseline.json"
