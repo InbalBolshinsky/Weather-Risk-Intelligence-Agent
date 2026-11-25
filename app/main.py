@@ -10,7 +10,7 @@ import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date
 from typing import Any, Callable
 
 from dotenv import load_dotenv
@@ -20,7 +20,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from app.agent.loop import Agent
-from app.agent.tools import HazardArg, RankArgs, RegionArg, ToolContext, rank_hubs
+from app.agent.tools import HazardArg, RankArgs, RegionArg, ToolContext, rank_hubs, utc_day
 from app.config import ROOT
 from app.data import fema_nri
 from app.data.http import CachedHttp
@@ -50,10 +50,6 @@ def db_http() -> CachedHttp:
     if http is None:
         http = _local.http = CachedHttp(connect())
     return http
-
-
-def utc_today() -> str:
-    return datetime.now(timezone.utc).date().isoformat()
 
 
 def questions_left(http: CachedHttp, day: str) -> int:
@@ -88,6 +84,9 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
                   description="Ask about weather-disruption risk for 20 US logistics hubs. "
                               "Scores come from a deterministic engine; the LLM only explains them.")
 
+    def tool_context(http: CachedHttp) -> ToolContext:
+        return ToolContext(http, scoring.with_http(http), date.fromisoformat(utc_day()))
+
     def require_access(code: str | None = Depends(access_header)) -> None:
         expected = os.getenv("DEMO_TOKEN")
         # bytes: compare_digest raises TypeError (a 500) on non-ASCII strings
@@ -113,11 +112,11 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
             if n >= CONVERSATION_CAP:
                 raise HTTPException(429, detail={"error": "conversation_limit",
                                                  "message": "This conversation reached its limit. Start a new chat."})
-        day = utc_today()
+        day = utc_day()
         if not bump_counter(http.conn, day, "chat", DAILY_CAP):
             raise HTTPException(429, detail={"error": "daily_limit", "questions_left_today": 0,
                                              "message": DAILY_LIMIT_MSG})
-        ctx = ToolContext(http, scoring.with_http(http), datetime.now(timezone.utc).date())
+        ctx = tool_context(http)
         result = Agent(provider_factory(), ctx).chat(req.message, req.session_id)
         if result.provider_failed:   # no model answered: don't use up a question of the daily cap
             unbump_counter(http.conn, day, "chat")
@@ -142,7 +141,7 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
                 "hubs_scored": hubs_ready, "nri_counties": len(counties),
                 "nri_version": counties[0].nri_ver if counties else None,
                 "config_version": scoring.cfg.version, "models": models,
-                "questions_left_today": questions_left(http, utc_today()), "daily_cap": DAILY_CAP,
+                "questions_left_today": questions_left(http, utc_day()), "daily_cap": DAILY_CAP,
                 "conversation_cap": CONVERSATION_CAP, "access_code_required": bool(os.getenv("DEMO_TOKEN")),
                 "daily_limit_message": DAILY_LIMIT_MSG}
 
@@ -159,7 +158,7 @@ def create_app(provider_factory: Callable[[], LLMProvider] = build_chain) -> Fas
     def rankings(hazard: HazardArg = "overall", region: RegionArg | None = Query(None)) -> dict[str, Any]:
         """The scoring engine's ranking, with no LLM involved: compare it with the agent's answers."""
         http = db_http()
-        ctx = ToolContext(http, scoring.with_http(http), datetime.now(timezone.utc).date())
+        ctx = tool_context(http)
         return rank_hubs(ctx, RankArgs(hazard=hazard, region=region, top_n=20))
 
     return app

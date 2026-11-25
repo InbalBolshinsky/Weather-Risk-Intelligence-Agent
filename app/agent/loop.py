@@ -23,7 +23,7 @@ from app.agent.prompts import system_prompt
 from app.agent.schemas import SUBMIT_ANSWER_SPEC, AgentAnswer
 from app.agent.tools import DATA_TOOLS, TOOL_SPECS, ToolContext, run_tool
 from app.config import hub_registry
-from app.llm.base import LLMProvider, Message
+from app.llm.base import LLMProvider, Message, ToolCall
 from app.llm.fallback import AllProvidersFailed
 from app.scoring.engine import LEVEL_ORDER, worst
 
@@ -218,104 +218,122 @@ class Agent:
         history = self._history(session_id)
         sys_prompt = system_prompt(self.today)
         user_msg: Message = {"role": "user", "content": message}
-        messages: list[Message] = [{"role": "system", "content": sys_prompt}, *history, user_msg]
-        turn_msgs: list[Message] = [user_msg]
-        sources = [sys_prompt, message]                       # + this turn's tool results, added below
+        t = _Turn(messages=[{"role": "system", "content": sys_prompt}, *history, user_msg], turn_msgs=[user_msg],
+                  sources=[sys_prompt, message])   # sources: + this turn's tool results, added as tools run
         history_allowed = self._history_allowed_numbers(session_id, history)
-        data_results: list[tuple[str, dict]] = []
-        debug: dict[str, Any] = {"rounds": 0, "tool_calls": [], "tool_results": [], "providers": [], "tokens": 0,
-                                 "events": []}
         events_before = len(getattr(self.provider, "events", []))
-        repairs_left = 1
-        final: AgentAnswer | None = None
         verdict: Verdict | None = None
         provider_failed = False
-
         try:
-            for _ in range(self.max_rounds):
-                lt = self.provider.complete(messages, TOOLS, "required")
-                debug["rounds"] += 1
-                debug["tokens"] += lt.usage.get("total", 0)
-                debug["providers"].append(f"{lt.provider}:{lt.model}")
-                for c in lt.tool_calls:   # gpt-oss sometimes prefixes tool names ("functions.submit_answer")
-                    c.name = c.name.removeprefix("functions.")
-                if not lt.tool_calls:   # shouldn't happen with tool_choice="required"; nudge
-                    messages.append({"role": "assistant", "content": lt.text or ""})
-                    messages.append({"role": "user", "content": "Finish by calling submit_answer."})
-                    continue
-                assistant: Message = {"role": "assistant", "content": lt.text or "", "tool_calls": [
-                    {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
-                    for c in lt.tool_calls]}
-                messages.append(assistant)
-                turn_msgs.append(assistant)
-                submit = None
-                for call in lt.tool_calls:
-                    if call.name == "submit_answer":
-                        submit = submit or call
-                        continue
-                    c0 = time.perf_counter()
-                    result, is_err = run_tool(self.ctx, call.name, call.arguments)
-                    content = json.dumps(result, separators=(",", ":"))
-                    debug["tool_calls"].append({"name": call.name, "arguments": call.arguments,
-                                                "ms": int((time.perf_counter() - c0) * 1000), "error": is_err})
-                    debug["tool_results"].append({"tool": call.name, "result": result})
-                    if call.name in DATA_TOOLS:
-                        sources.append(content)   # tool output, incl. error messages ("max 30 years"), is a source
-                        if not is_err:
-                            data_results.append((call.name, result))
-                    tool_msg = {"role": "tool", "tool_call_id": call.id, "content": content}
-                    messages.append(tool_msg)
-                    turn_msgs.append(tool_msg)
-                for call in lt.tool_calls:   # every tool call needs a response, duplicates included
-                    if call.name == "submit_answer" and call is not submit:
-                        dup = {"role": "tool", "tool_call_id": call.id, "content": '{"error":"duplicate submit_answer"}'}
-                        messages.append(dup)
-                        turn_msgs.append(dup)
-                if submit is None:
-                    continue
-                expected = lowest_confidence(data_results)
-                expected_reason = next((r["confidence_reason"] for _, r in data_results
-                                        if r.get("confidence") == expected and r.get("confidence_reason")), None)
-                verdict = self._check(submit.arguments, sources, expected, expected_reason, history_allowed)
-                accept = verdict.ok or (verdict.fixable_by_code and repairs_left == 0)
-                reply = {"status": "accepted"} if accept else {
-                    "status": "rejected", "problems": verdict.problems, "fix": "correct these and call submit_answer again"}
-                submit_reply = {"role": "tool", "tool_call_id": submit.id, "content": json.dumps(reply)}
-                messages.append(submit_reply)
-                turn_msgs.append(submit_reply)
-                if accept:
-                    final = verdict.answer
-                    if verdict.confidence_wrong and expected:
-                        final.answer_markdown = _fix_confidence_line(final.answer_markdown, expected, expected_reason)
-                        debug["events"].append(f"confidence line written by code: {expected}")
-                    if verdict.ungrounded:   # D50: the code, not the model, writes this warning
-                        final.answer_markdown = (final.answer_markdown.rstrip() + "\n\nNote: some numbers in this "
-                                                 "answer could not be verified against the data: "
-                                                 + ", ".join(verdict.ungrounded) + ".")
-                    break
-                if repairs_left == 0:   # schema/semantic failure after the one repair: give up cleanly
-                    final = _error_answer("Sorry, I couldn't produce a valid answer. Please rephrase or try again.")
-                    debug["events"].append(f"answer rejected after repair: {verdict.problems}")
-                    break
-                repairs_left -= 1
-                debug["events"].append(f"repair requested: {verdict.problems}")
-            if final is None:
-                final = _error_answer("Sorry, I couldn't finish this request within the step limit. Please narrow it down.")
+            final, verdict = self._rounds(t, history_allowed)
         except AllProvidersFailed as e:
             final = _error_answer(busy_message(e.retry_after))
             provider_failed = True
-            debug["events"].append(f"all providers failed: {e}")
-            turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
+            t.debug["events"].append(f"all providers failed: {e}")
+            t.turn_msgs = [user_msg]   # don't persist a half-finished tool exchange
         except Exception as e:  # noqa: BLE001 - a bug must not become an HTTP 500 mid-demo; it's logged in debug
             final = _error_answer("Sorry, something went wrong while answering. Please try again.")
             log.exception("agent turn failed")   # full details in the server log only
-            debug["events"].append(f"internal error: {type(e).__name__}")   # type only: debug reaches the browser
-            turn_msgs = [user_msg]
+            t.debug["events"].append(f"internal error: {type(e).__name__}")   # type only: debug reaches the browser
+            t.turn_msgs = [user_msg]
 
+        debug = t.debug
         debug["events"] = getattr(self.provider, "events", [])[events_before:] + debug["events"]
         debug["latency_ms"] = int((time.perf_counter() - t0) * 1000)
         answer = final.model_dump()
-        confidence = lowest_confidence(data_results) if final.response_type == "answer" else None
+        confidence = lowest_confidence(t.data_results) if final.response_type == "answer" else None
         ungrounded = verdict.ungrounded if (verdict and final is verdict.answer) else []
-        self._save(session_id, message, turn_msgs, {**answer, "unverified_numbers": ungrounded})
+        self._save(session_id, message, t.turn_msgs, {**answer, "unverified_numbers": ungrounded})
         return TurnResult(session_id, answer, confidence, bool(ungrounded), ungrounded, debug, provider_failed)
+
+    def _rounds(self, t: "_Turn", history_allowed: set[str]) -> tuple[AgentAnswer, Verdict | None]:
+        """Model rounds until an accepted submit_answer (one repair allowed) or the step limit."""
+        repairs_left = 1
+        verdict: Verdict | None = None
+        for _ in range(self.max_rounds):
+            lt = self.provider.complete(t.messages, TOOLS, "required")
+            t.debug["rounds"] += 1
+            t.debug["tokens"] += lt.usage.get("total", 0)
+            t.debug["providers"].append(f"{lt.provider}:{lt.model}")
+            for c in lt.tool_calls:   # gpt-oss sometimes prefixes tool names ("functions.submit_answer")
+                c.name = c.name.removeprefix("functions.")
+            if not lt.tool_calls:   # shouldn't happen with tool_choice="required"; nudge
+                t.messages.append({"role": "assistant", "content": lt.text or ""})
+                t.messages.append({"role": "user", "content": "Finish by calling submit_answer."})
+                continue
+            t.add({"role": "assistant", "content": lt.text or "", "tool_calls": [
+                {"id": c.id, "type": "function", "function": {"name": c.name, "arguments": c.arguments}}
+                for c in lt.tool_calls]})
+            submit = self._run_tool_calls(t, lt.tool_calls)
+            if submit is None:
+                continue
+            expected = lowest_confidence(t.data_results)
+            expected_reason = next((r["confidence_reason"] for _, r in t.data_results
+                                    if r.get("confidence") == expected and r.get("confidence_reason")), None)
+            verdict = self._check(submit.arguments, t.sources, expected, expected_reason, history_allowed)
+            accept = verdict.ok or (verdict.fixable_by_code and repairs_left == 0)
+            reply = {"status": "accepted"} if accept else {
+                "status": "rejected", "problems": verdict.problems, "fix": "correct these and call submit_answer again"}
+            t.add({"role": "tool", "tool_call_id": submit.id, "content": json.dumps(reply)})
+            if accept:
+                return _apply_code_fixes(verdict, expected, expected_reason, t.debug), verdict
+            if repairs_left == 0:   # schema/semantic failure after the one repair: give up cleanly
+                t.debug["events"].append(f"answer rejected after repair: {verdict.problems}")
+                return _error_answer("Sorry, I couldn't produce a valid answer. Please rephrase or try again."), verdict
+            repairs_left -= 1
+            t.debug["events"].append(f"repair requested: {verdict.problems}")
+        return _error_answer("Sorry, I couldn't finish this request within the step limit. Please narrow it down."), verdict
+
+    def _run_tool_calls(self, t: "_Turn", calls: list[ToolCall]) -> ToolCall | None:
+        """Run the data tools of one round; answer duplicate submits; return the first submit_answer (or None)."""
+        submit = None
+        for call in calls:
+            if call.name == "submit_answer":
+                submit = submit or call
+                continue
+            c0 = time.perf_counter()
+            result, is_err = run_tool(self.ctx, call.name, call.arguments)
+            content = json.dumps(result, separators=(",", ":"))
+            t.debug["tool_calls"].append({"name": call.name, "arguments": call.arguments,
+                                          "ms": int((time.perf_counter() - c0) * 1000), "error": is_err})
+            t.debug["tool_results"].append({"tool": call.name, "result": result})
+            if call.name in DATA_TOOLS:
+                t.sources.append(content)   # tool output, incl. error messages ("max 30 years"), is a source
+                if not is_err:
+                    t.data_results.append((call.name, result))
+            t.add({"role": "tool", "tool_call_id": call.id, "content": content})
+        for call in calls:   # every tool call needs a response, duplicates included
+            if call.name == "submit_answer" and call is not submit:
+                t.add({"role": "tool", "tool_call_id": call.id, "content": '{"error":"duplicate submit_answer"}'})
+        return submit
+
+
+@dataclass
+class _Turn:
+    """State of one turn: what the model sees, what gets saved, the grounding sources, and the debug record."""
+    messages: list[Message]
+    turn_msgs: list[Message]
+    sources: list[str]
+    data_results: list[tuple[str, dict]] = field(default_factory=list)
+    debug: dict[str, Any] = field(default_factory=lambda: {"rounds": 0, "tool_calls": [], "tool_results": [],
+                                                           "providers": [], "tokens": 0, "events": []})
+
+    def add(self, msg: Message) -> None:
+        """A message both sent to the model and saved with the turn."""
+        self.messages.append(msg)
+        self.turn_msgs.append(msg)
+
+
+def _apply_code_fixes(verdict: Verdict, expected: str | None, expected_reason: str | None,
+                      debug: dict[str, Any]) -> AgentAnswer:
+    """After the one repair: the code writes the confidence line (D51) and the unverified-numbers note (D50)."""
+    final = verdict.answer
+    assert final is not None
+    if verdict.confidence_wrong and expected:
+        final.answer_markdown = _fix_confidence_line(final.answer_markdown, expected, expected_reason)
+        debug["events"].append(f"confidence line written by code: {expected}")
+    if verdict.ungrounded:   # D50: the code, not the model, writes this warning
+        final.answer_markdown = (final.answer_markdown.rstrip() + "\n\nNote: some numbers in this "
+                                 "answer could not be verified against the data: "
+                                 + ", ".join(verdict.ungrounded) + ".")
+    return final

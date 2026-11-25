@@ -12,7 +12,7 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.config import BASELINE_END, BASELINE_START, hub_registry
+from app.config import BASELINE_END, BASELINE_START, Hub, hub_registry
 from app.data import ghcn, nws, open_meteo
 from app.data.http import CachedHttp
 from app.data.series import GUST_MAX, PRECIP, SNOWFALL, TMAX, TMIN, DailySeries
@@ -128,6 +128,16 @@ def _resolve_places(ctx: ToolContext, places: list[Place]) -> list[Resolution]:
     return [resolve(ctx.http, p.query, p.interpreted_from) for p in places]
 
 
+def _spend_live_quota(ctx: ToolContext) -> bool:
+    """D49: a live non-hub lookup costs up to ~157 Open-Meteo calls; False once today's shared cap is used up."""
+    return bump_counter(ctx.http.conn, ctx.clock_day(), "live_profile", LIVE_PROFILE_DAILY_CAP)
+
+
+def _data_years(ctx: ToolContext) -> str:
+    w = ctx.scoring.cfg.baseline_window
+    return f"{w['start'][:4]}-{w['end'][:4]}"
+
+
 def _unresolved_entry(r: Resolution) -> dict:
     hint = {"ambiguous": "ask the user which one they mean",
             "not_found": "not found; you may interpret a landmark (set interpreted_from) or ask for a US city",
@@ -143,6 +153,15 @@ DEFAULT_TOP_N = 5   # D54: all-hub rankings return the top 5 unless the model as
 def confidence_line(level: str, reason: str | None, basis_if_high: str) -> str:
     """D54(1): a ready line the model can copy; the validator checks it either way (D43, D52)."""
     return f"Confidence: {level} - {reason if level != 'high' and reason else basis_if_high}"
+
+
+def _confidence_fields(level: str, reason: str | None, basis_if_high: str) -> dict[str, str]:
+    """The confidence block every data tool ends with (D28, D52, D54): level, the conflicting facts, a ready line."""
+    out = {"confidence": level}
+    if reason:
+        out["confidence_reason"] = reason
+    out["confidence_line"] = confidence_line(level, reason, basis_if_high)
+    return out
 
 
 def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
@@ -173,10 +192,8 @@ def rank_hubs(ctx: ToolContext, a: RankArgs) -> dict:
     level = worst([e["confidence"] for e in entries[:3]])
     reason = next((f"{e['hub']}: {e['confidence_reason']}" for e in entries[:3]
                    if e["confidence"] == level and e.get("confidence_reason")), None)
-    out["confidence"] = level
-    if reason and level != "high":
-        out["confidence_reason"] = reason
-    out["confidence_line"] = confidence_line(level, reason, "FEMA county data and observed weather agree for the top hubs")
+    out.update(_confidence_fields(level, reason if level != "high" else None,
+                                  "FEMA county data and observed weather agree for the top hubs"))
     return out
 
 
@@ -216,14 +233,13 @@ def get_risk_profile(ctx: ToolContext, a: ProfileArgs) -> dict:
         if r.hub_id:
             s = ctx.scoring.hub_score(reg.get(r.hub_id))  # type: ignore[arg-type]
         else:
-            if not bump_counter(ctx.http.conn, ctx.clock_day(), "live_profile", LIVE_PROFILE_DAILY_CAP):
+            if not _spend_live_quota(ctx):
                 profiles.append({"place": r.public(), "note": "daily limit for non-hub profiles reached; try tomorrow"})
                 continue
             s = ctx.scoring.score_point(r.lat, r.lon, f"{r.lat:.3f},{r.lon:.3f}", r.label or r.query)  # type: ignore[arg-type]
         profiles.append({"place": r.public(), **_profile(s, rank_overall)})
         scored.append((r.hub_id or (r.label or r.query), s))
-    out: dict[str, Any] = {"profiles": profiles, "data": f"{ctx.scoring.cfg.baseline_window['start'][:4]}-"
-                                                         f"{ctx.scoring.cfg.baseline_window['end'][:4]}"}
+    out: dict[str, Any] = {"profiles": profiles, "data": _data_years(ctx)}
     if len(scored) >= 2:   # computed comparison, one line per hazard, linear in the number of places (D24)
         comp = {}
         for h in ("wdri",) + HAZARDS:
@@ -235,10 +251,7 @@ def get_risk_profile(ctx: ToolContext, a: ProfileArgs) -> dict:
         weakest_name, weakest = min(scored, key=lambda x: LEVEL_ORDER[x[1].confidence])
         level = weakest.confidence
         reason = f"{weakest_name}: {weakest.confidence_reasons[0]}" if weakest.confidence_reasons and level != "high" else None
-        out["confidence"] = level
-        if reason:
-            out["confidence_reason"] = reason
-        out["confidence_line"] = confidence_line(level, reason, "FEMA county data and observed weather agree")
+        out.update(_confidence_fields(level, reason, "FEMA county data and observed weather agree"))
     return out
 
 
@@ -277,6 +290,43 @@ def _counts(series: DailySeries, m: Metric, station: bool) -> list[dict]:
     return rows
 
 
+def _grid_block(ctx: ToolContext, lat: float, lon: float, m: Metric, s: str, e: str, in_baseline: bool,
+                fetch_live: bool) -> dict | None:
+    """Grid-model counts. Free from the cached 2016-2025 baseline; outside it only for non-hubs (<= 10 years),
+    because hubs have the station (D46) and a long grid download costs ~470 Open-Meteo calls for 30 years."""
+    if in_baseline:
+        grid = open_meteo.archive_daily(ctx.http, lat, lon, BASELINE_START, BASELINE_END).window(s, e)
+    elif fetch_live:
+        grid = open_meteo.archive_daily(ctx.http, lat, lon, s, e)
+    else:
+        return None
+    grid, grid_last = trim_to_data(grid, m.var)
+    if not grid_last:
+        return None
+    return {"source": "Open-Meteo ERA5 grid model (~10-25 km cells)", "data_through": grid_last,
+            "counts": _counts(grid, m, False)}
+
+
+def _station_block(ctx: ToolContext, hub: Hub, m: Metric, s: str, e: str, entry: dict[str, Any]) -> dict | None:
+    """NOAA station counts if the station measured this on >= 95% of days (D70: or over its measured years);
+    otherwise None, with a station_note on `entry` saying why the grid model is used."""
+    stn, stn_last = trim_to_data(ghcn.station_daily(ctx.http, hub.station, s, e), m.var)
+    cov = stn.coverage(m.var)
+    if stn_last and cov < STATION_MIN_COVERAGE:
+        tail = covered_tail(stn, m.var)      # D70: use only the years the station actually measured
+        if tail is not None:
+            entry["station_note"] = (f"{hub.station_name} has no {m.var} records before {tail.dates[0]}; "
+                                     f"counts cover {tail.dates[0]} to {stn_last} only")
+            stn, cov = tail, tail.coverage(m.var)
+    if stn_last and cov >= STATION_MIN_COVERAGE:
+        return {"source": f"NOAA weather station: {hub.station_name} ({hub.station})",
+                "period": f"{stn.dates[0]} to {stn_last}", "data_coverage": fmt_percent(100 * cov, 0),
+                "counts": _counts(stn, m, True)}
+    entry["station_note"] = (f"{hub.station_name} reports this on only {fmt_percent(100 * cov, 0)} of days; "
+                             "using the grid model")
+    return None
+
+
 def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
     try:
         start, end = date.fromisoformat(a.start_date), date.fromisoformat(a.end_date)
@@ -302,43 +352,12 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
         hub = reg.get(r.hub_id) if r.hub_id else None
         lat, lon = (hub.lat, hub.lon) if hub else (r.lat, r.lon)
         entry: dict[str, Any] = {"place": r.public()}
-        # Grid model: free from the cached 2016-2025 baseline; outside it only for non-hubs (<= 10 years), because
-        # hubs have the station (D46) and a long grid download costs ~470 Open-Meteo calls for 30 years.
-        grid_block = None
-        wants_grid = in_baseline or (hub is None and days <= MAX_GRID_STAT_DAYS)
-        # A non-hub grid download costs up to ~157 Open-Meteo calls: it shares the non-hub daily cap (D49).
-        if hub is None and wants_grid and not bump_counter(ctx.http.conn, ctx.clock_day(), "live_profile",
-                                                           LIVE_PROFILE_DAILY_CAP):
+        fetch_live = hub is None and days <= MAX_GRID_STAT_DAYS
+        if hub is None and (in_baseline or fetch_live) and not _spend_live_quota(ctx):
             results.append({**entry, "note": "daily limit for places that aren't hubs reached; try tomorrow"})
             continue
-        if in_baseline:
-            grid = open_meteo.archive_daily(ctx.http, lat, lon, BASELINE_START, BASELINE_END).window(s, e)  # type: ignore[arg-type]
-        elif hub is None and days <= MAX_GRID_STAT_DAYS:
-            grid = open_meteo.archive_daily(ctx.http, lat, lon, s, e)  # type: ignore[arg-type]
-        else:
-            grid = None
-        if grid is not None:
-            grid, grid_last = trim_to_data(grid, m.var)
-            if grid_last:
-                grid_block = {"source": "Open-Meteo ERA5 grid model (~10-25 km cells)",
-                              "data_through": grid_last, "counts": _counts(grid, m, False)}
-        primary = None
-        if hub and m.station:
-            stn, stn_last = trim_to_data(ghcn.station_daily(ctx.http, hub.station, s, e), m.var)
-            cov = stn.coverage(m.var)
-            if stn_last and cov < STATION_MIN_COVERAGE:
-                tail = covered_tail(stn, m.var)      # D70: use only the years the station actually measured
-                if tail is not None:
-                    entry["station_note"] = (f"{hub.station_name} has no {m.var} records before {tail.dates[0]}; "
-                                             f"counts cover {tail.dates[0]} to {stn_last} only")
-                    stn, cov = tail, tail.coverage(m.var)
-            if stn_last and cov >= STATION_MIN_COVERAGE:
-                primary = {"source": f"NOAA weather station: {hub.station_name} ({hub.station})",
-                           "period": f"{stn.dates[0]} to {stn_last}", "data_coverage": fmt_percent(100 * cov, 0),
-                           "counts": _counts(stn, m, True)}
-            else:
-                entry["station_note"] = (f"{hub.station_name} reports this on only {fmt_percent(100 * cov, 0)} of days; "
-                                         "using the grid model")
+        grid_block = _grid_block(ctx, lat, lon, m, s, e, in_baseline, fetch_live)
+        primary = _station_block(ctx, hub, m, s, e, entry) if hub and m.station else None
         if hub is None and days > MAX_GRID_STAT_DAYS:
             results.append({**entry, "note": "max 10 years for places that aren't hubs (no weather station data)"})
             continue
@@ -359,11 +378,8 @@ def get_weather_stat(ctx: ToolContext, a: StatArgs) -> dict:
             entry["caveat"] = ("grid-model snow converts snow water to depth at a fixed 7:1 ratio and tends to "
                                "overcount light-snow days compared with station measurements")
         results.append(entry)
-    out: dict[str, Any] = {"metric": a.metric, "results": results, "confidence": level}
-    if reason:
-        out["confidence_reason"] = reason
-    out["confidence_line"] = confidence_line(level, reason, "measured at the airport weather station")
-    return out
+    return {"metric": a.metric, "results": results,
+            **_confidence_fields(level, reason, "measured at the airport weather station")}
 
 
 def get_active_alerts(ctx: ToolContext, a: AlertArgs) -> dict:
@@ -404,8 +420,7 @@ def get_methodology(ctx: ToolContext, a: MethodArgs) -> dict:
                                  "Houston's (storm-track intensity data not included)",
                                  "FEMA data is county-level: large or mountainous counties can inflate flood or "
                                  "winter frequencies (flagged as low confidence)"],
-            "data": f"FEMA National Risk Index (county level) + Open-Meteo ERA5 daily weather, "
-                    f"{cfg.baseline_window['start'][:4]}-{cfg.baseline_window['end'][:4]}",
+            "data": f"FEMA National Risk Index (county level) + Open-Meteo ERA5 daily weather, {_data_years(ctx)}",
             "not_covered": ["financial loss or downtime cost", "facility specifics (flood zone, elevation)",
                             "hurricane intensity", "future climate trends", "wildfire, earthquake, drought"],
             "config_version": cfg.version}
