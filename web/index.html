@@ -165,7 +165,7 @@ function split(text) {
   let conf = null, note = null;
   const kept = text.split("\n").filter(line => {
     const m = line.match(CONF);
-    if (m) { conf = {level: m[1].toLowerCase(), why: m[2].trim()}; return false; }
+    if (m) { conf = {level: m[1].toLowerCase(), why: m[2].replace(/[*_\s]+$/, "")}; return false; }   // drop closing italic/bold markers
     if (NOTE.test(line)) { note = line.trim(); return false; }
     return true;
   });

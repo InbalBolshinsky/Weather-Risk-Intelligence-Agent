@@ -4,6 +4,9 @@ An AI agent that helps logistics analysts decide which US distribution hubs are 
 disruption. A deterministic engine computes every score; the LLM only picks tools and explains. Full design
 and decision log: [PLAN.md](PLAN.md). Setup and run commands: [CLAUDE.md](CLAUDE.md) (full README in step 8).
 
+**Live demo:** https://weather-risk-agent-pzle.onrender.com (needs the access code sent with the submission;
+the first load can take about a minute while the free server wakes up).
+
 ## Known limitations
 
 - **LLM availability (free tier only).** The main model (Groq `qwen3.8-27b`, 14/16 in our comparison) is a
