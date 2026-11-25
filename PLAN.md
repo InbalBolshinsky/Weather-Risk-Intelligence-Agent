@@ -2,8 +2,8 @@
 
 Living plan; decisions are recorded in the **Decision log** (D1…). Working mode and rules: `CLAUDE.md`.
 
-**Status (2026-11-25):** steps 0–4 done and committed. Open: LLM chain order (comparison of free models
-running). Next: step 5 (API + chat page).
+**Status (2026-11-25):** steps 0–4 done (chain qwen3.8-27b → gpt-oss-20b, D56). Next: step 5 (API + chat
+page; includes one SQLite connection per request). Known limitations: README.
 
 **Guiding principle:** the best agent for this assignment, judged by clarity, control, reliability, and
 simplicity to run. Free-tier services only (D53).
@@ -146,7 +146,10 @@ LLM-free `GET /api/rankings` to show scores come from code. The UI shows only th
 | qwen3.8-27b (Groq) | 14/16, fully grounded; failures: one rate limit, one since-removed ROI check (D55); ~8.5K tokens/turn before D54 |
 | gpt-oss-120b (Groq) | 5/16: 10 malformed tool calls |
 | gemini-3.6-flash | 0/16: 13 rate limits, 3 × 400 |
-| gpt-oss-20b, gemini-3.5-flash-lite | running (after D54) |
+| gpt-oss-20b (Groq), after D54 | 9/16: 7 malformed tool calls, 2 rate limits; ~3.7K tokens/turn, 2.7 s |
+| gemini-3.5-flash-lite, after D54 | 1/16: 13 empty 400 errors from Google's endpoint |
+
+**Chain (D56): qwen3.8-27b → gpt-oss-20b.** gpt-oss-120b and both Gemini models disabled (reasons in `config/llm.yaml`).
 
 ### 3.2 Tools
 
@@ -341,3 +344,6 @@ and kept out of hub rankings (D10).
 | D53 | Free-tier models only (Cerebras out); comparison results in §3.1 | Accepted (user) |
 | D54 | Token savings: ready confidence line, top-5 rankings, lean results, smaller contract, tighter prompt | Accepted (user) |
 | D55 | Costs/ROI stay out of scope; no extra ROI rule | Accepted (user) |
+| D56 | LLM chain = qwen3.8-27b → gpt-oss-20b (comparison: 14/16, 9/16); gpt-oss-120b and Gemini disabled | Accepted (user) |
+| D57 | Grounding fix: numbers an earlier answer shipped as unverified (and validator feedback) never count as sources later | Accepted (user) |
+| D58 | Step-4 weakness review: fix #4 now (D57); SQLite per-request connections in step 5; stronger evals in step 6; the rest documented in README "Known limitations" | Accepted (user) |

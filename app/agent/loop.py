@@ -44,9 +44,9 @@ def numbers_in(text: str) -> set[str]:
     return {_norm_num(m) for m in _NUM.findall(text or "")}
 
 
-def ungrounded_numbers(answer_text: str, sources: list[str]) -> list[str]:
+def ungrounded_numbers(answer_text: str, sources: list[str], extra_allowed: set[str] | frozenset = frozenset()) -> list[str]:
     """D44: every number must appear in a tool result, the conversation, or the prompt (no exemptions)."""
-    allowed: set[str] = set()
+    allowed: set[str] = set(extra_allowed)
     for s in sources:
         allowed |= numbers_in(s)
     return sorted({n for n in numbers_in(answer_text) if n not in allowed}, key=lambda x: float(x))
@@ -131,6 +131,24 @@ class Agent:
             out.append({"role": "assistant", "content": _compact(answer)})
         return out
 
+    def _history_allowed_numbers(self, session_id: str, history: list[Message]) -> set[str]:
+        """D57: numbers earlier turns make available for grounding. Tool results count in full; user/assistant
+        text counts minus any number an earlier answer shipped as unverified (D50), so an unverified number
+        can never become 'grounded' by being repeated in a later answer."""
+        blocked: set[str] = set()
+        for r in self.conn.execute("SELECT answer_json FROM turns WHERE session_id=?", (session_id,)).fetchall():
+            blocked |= set(json.loads(r["answer_json"]).get("unverified_numbers", []))
+        # Replies to submit_answer (e.g. "rejected: ungrounded numbers [41]") are validator feedback, not data.
+        submit_ids = {c["id"] for m in history for c in (m.get("tool_calls") or [])
+                      if c.get("function", {}).get("name") == "submit_answer"}
+        allowed: set[str] = set()
+        for m in history:
+            if not isinstance(m.get("content"), str) or m.get("tool_call_id") in submit_ids:
+                continue
+            nums = numbers_in(m["content"])
+            allowed |= nums if m["role"] == "tool" else (nums - blocked)
+        return allowed
+
     def _save(self, session_id: str, user_message: str, full: list[Message], answer: dict[str, Any]) -> None:
         seq = self.conn.execute("SELECT COALESCE(MAX(seq), 0) + 1 FROM turns WHERE session_id=?", (session_id,)).fetchone()[0]
         self.conn.execute("INSERT INTO turns(session_id, seq, user_message, full_json, answer_json, created_at) "
@@ -140,7 +158,7 @@ class Agent:
 
     # ------------------------------------------------------------------ validation (§5.2, D43, D44)
     def _check(self, arguments: str, sources: list[str], expected_conf: str | None,
-               expected_reason: str | None = None) -> Verdict:
+               expected_reason: str | None = None, history_allowed: set[str] | frozenset = frozenset()) -> Verdict:
         try:
             ans = AgentAnswer.model_validate_json(arguments)
         except ValidationError as e:
@@ -152,7 +170,7 @@ class Agent:
         bad = [loc.hub_id for loc in ans.locations if loc.hub_id and reg.get(loc.hub_id) is None]
         if bad:
             problems.append(f"unknown hub ids in locations: {bad}")
-        ung = ungrounded_numbers(ans.answer_markdown, sources)
+        ung = ungrounded_numbers(ans.answer_markdown, sources, history_allowed)
         if ung:
             problems.append(f"ungrounded numbers {ung}: every number must be quoted exactly from a tool result "
                             "(or an earlier answer); remove or replace these")
@@ -182,7 +200,8 @@ class Agent:
         user_msg: Message = {"role": "user", "content": message}
         messages: list[Message] = [{"role": "system", "content": sys_prompt}, *history, user_msg]
         turn_msgs: list[Message] = [user_msg]
-        sources = [sys_prompt, message] + [m["content"] for m in history if isinstance(m.get("content"), str)]
+        sources = [sys_prompt, message]                       # + this turn's tool results, added below
+        history_allowed = self._history_allowed_numbers(session_id, history)
         data_results: list[tuple[str, dict]] = []
         debug: dict[str, Any] = {"rounds": 0, "tool_calls": [], "tool_results": [], "providers": [], "tokens": 0,
                                  "events": []}
@@ -234,7 +253,7 @@ class Agent:
                 expected = min(levels, key=lambda c: _LEVELS[c]) if levels else None
                 expected_reason = next((r["confidence_reason"] for _, r in data_results
                                         if r.get("confidence") == expected and r.get("confidence_reason")), None)
-                verdict = self._check(submit.arguments, sources, expected, expected_reason)
+                verdict = self._check(submit.arguments, sources, expected, expected_reason, history_allowed)
                 accept = verdict.ok or (verdict.fixable_by_code and repairs_left == 0)
                 reply = {"status": "accepted"} if accept else {
                     "status": "rejected", "problems": verdict.problems, "fix": "correct these and call submit_answer again"}
@@ -271,5 +290,5 @@ class Agent:
         levels = [r.get("confidence") for _, r in data_results if r.get("confidence")]
         confidence = min(levels, key=lambda c: _LEVELS[c]) if levels and final.response_type == "answer" else None
         ungrounded = verdict.ungrounded if (verdict and final is verdict.answer) else []
-        self._save(session_id, message, turn_msgs, answer)
+        self._save(session_id, message, turn_msgs, {**answer, "unverified_numbers": ungrounded})
         return TurnResult(session_id, answer, confidence, bool(ungrounded), ungrounded, debug)

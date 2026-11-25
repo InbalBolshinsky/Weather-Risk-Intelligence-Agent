@@ -155,6 +155,27 @@ def test_history_keeps_latest_turn_in_full_and_older_turns_compact(agent_factory
     assert [m["content"] for m in last if m["role"] == "user"] == ["Q1", "Q2", "Q3"]
 
 
+def test_unverified_number_cannot_be_grounded_by_repeating_it_later(agent_factory):   # D57
+    bad = answer("Dallas WDRI 41.\nConfidence: medium - x")
+    repeat = answer("As I said, Dallas WDRI 41.", rtype="answer")
+    p = Script(call("get_risk_profile", {"places": []}, 1), call("submit_answer", bad, 2), call("submit_answer", bad, 3),
+               call("submit_answer", repeat, 4), call("submit_answer", repeat, 5))
+    agent = agent_factory(p)
+    first = agent.chat("Why is Dallas high?")
+    assert first.unverified and first.ungrounded_numbers == ["41"]
+    second = agent.chat("Repeat that?", first.session_id)
+    assert second.unverified and second.ungrounded_numbers == ["41"]   # still flagged, not laundered via history
+
+
+def test_verified_numbers_from_earlier_answers_still_count(agent_factory):
+    ok = answer("Dallas WDRI 32.\nConfidence: medium - x")
+    p = Script(call("get_risk_profile", {"places": []}, 1), call("submit_answer", ok, 2),
+               call("submit_answer", answer("Yes, 32.", rtype="answer"), 3))
+    agent = agent_factory(p)
+    sid = agent.chat("Why is Dallas high?").session_id
+    assert not agent.chat("Was it 32?", sid).unverified
+
+
 def test_grounding_has_no_small_number_exemption():   # D44
     assert ungrounded_numbers("ranked 3rd of 7", ["rank 3 of 20"]) == ["7"]
 

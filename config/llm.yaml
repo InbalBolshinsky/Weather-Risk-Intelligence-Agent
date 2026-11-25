@@ -1,37 +1,36 @@
-# LLM fallback chain (PLAN.md §2.6, D13, D21). Tried in order; an entry whose API key isn't set is skipped.
-# Keys come from the environment only. Fallback happens on availability errors (429 after a short wait,
-# 5xx, timeouts) and after a repeated malformed tool call; never on answer-validation failures.
-# The ORDER is provisional until the model comparison is re-run on the final prompt.
+# LLM fallback chain (PLAN.md §3.1; D13, D21, D53, D56). Tried in order; entries with enabled: false or
+# without their API key are skipped. Keys come from the environment only. Fallback happens on availability
+# errors (429 after a short wait, 5xx, timeouts) and after a repeated malformed tool call; never on
+# answer-validation failures. Order chosen by the 16-question comparison through the real agent (D56).
 timeout_s: 60
 chain:
-  - name: groq-gpt-oss-120b
-    base_url: https://api.groq.com/openai/v1
-    key_env: GROQ_API_KEY
-    model: openai/gpt-oss-120b
-    model_env: GROQ_MODEL            # .env may override the model
-    max_output_tokens: 2048
-    extra: {reasoning_effort: low}   # D40: fewer reasoning tokens per turn (free tier: 8K tokens/min)
-  - name: groq-qwen3.8-27b
+  - name: groq-qwen3.8-27b           # 14/16 in the comparison; Groq "preview" model
     base_url: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
     model: qwen/qwen3.8-27b
     max_output_tokens: 800           # Groq free tier: 1,000 output tokens/minute for this model
-  - name: groq-gpt-oss-20b           # candidate (D53): its own Groq quota on the same key
+  - name: groq-gpt-oss-20b           # 9/16; its own quota on the same key
     base_url: https://api.groq.com/openai/v1
     key_env: GROQ_API_KEY
     model: openai/gpt-oss-20b
     max_output_tokens: 2048
+  - name: groq-gpt-oss-120b          # 5/16: frequent malformed tool calls
+    base_url: https://api.groq.com/openai/v1
+    key_env: GROQ_API_KEY
+    model: openai/gpt-oss-120b
+    max_output_tokens: 2048
+    extra: {reasoning_effort: low}
     enabled: false
-  - name: gemini-flash-lite          # candidate (D53): "lite" models usually get a larger free quota
+  - name: gemini-flash-lite          # 1/16: empty 400 errors from Google's OpenAI-compatible endpoint
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     key_env: GOOGLE_API_KEY
     model: gemini-3.5-flash-lite
     max_output_tokens: 4096
     enabled: false
-  - name: gemini
+  - name: gemini                     # 0/16: free-tier rate limits (13/16) and 400 errors
     base_url: https://generativelanguage.googleapis.com/v1beta/openai/
     key_env: GOOGLE_API_KEY
     model: gemini-3.6-flash
     model_env: GEMINI_MODEL
     max_output_tokens: 4096
-    enabled: false                   # candidate (D38): accepts our real schema; chain order decided by the comparison
+    enabled: false
